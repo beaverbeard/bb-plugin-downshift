@@ -1,0 +1,3204 @@
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index e55037d..7a8a630 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -1,3 +1,4 @@
++import { initializeExecutionPolicies } from "./services/execution-policies/service.js";
+ import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
+ import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
+ import {
+@@ -755,6 +756,7 @@ export function createApp(
+     }
+     return next();
+   });
++  initializeExecutionPolicies(deps);
+   const pluginService = createPluginService({
+     machineEnrollments: getMachineEnrollmentService(deps),
+     db: deps.db,
+diff --git a/apps/server/src/services/execution-policies/runtime.test.ts b/apps/server/src/services/execution-policies/runtime.test.ts
+new file mode 100644
+index 0000000..7013425
+--- /dev/null
++++ b/apps/server/src/services/execution-policies/runtime.test.ts
+@@ -0,0 +1,334 @@
++import { afterEach, describe, it, expect } from "vitest";
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { randomUUID } from "node:crypto";
++import {
++  createExecutionPolicyRuntime,
++  type ExecutionPolicyRow,
++} from "./runtime.js";
++const directories: string[] = [];
++afterEach(() => {
++  for (const p of directories.splice(0))
++    rmSync(p, { recursive: true, force: true });
++});
++const profile = {
++  model: "efficient",
++  reasoningLevel: "medium",
++  serviceTier: "default",
++};
++const original = {
++  model: "primary",
++  reasoningLevel: "high",
++  serviceTier: "fast",
++};
++function fixture() {
++  const directory = mkdtempSync(join(tmpdir(), "bb-policy-test-"));
++  directories.push(directory);
++  const statePath = join(directory, "journal.json");
++  const row: ExecutionPolicyRow = {
++    id: "thread",
++    providerId: "codex",
++    hostId: "host",
++    deleted: false,
++    archived: false,
++    paused: false,
++    status: "idle",
++    activeTurnId: null,
++    lastRequestId: null,
++    available: true,
++    unavailableReason: null,
++    source: {
++      providerId: "codex",
++      allowFastServiceTier: true,
++      modelOverride: null,
++      reasoningLevelOverride: null,
++      lastExecution: { ...original },
++      defaults: { ...original },
++    },
++    sessionSnapshot: { selection: "original" },
++  };
++  const rows = [row];
++  const options = {
++    allowMissing: true,
++    statePath,
++    providerId: "codex",
++    profile,
++    adapter: {
++      list: () => rows,
++      get: (id: string) => rows.find((r) => r.id === id) ?? null,
++    },
++  };
++  const runtime = createExecutionPolicyRuntime(options);
++  runtime.attach();
++  const set = (enabled: boolean) =>
++    runtime.set({
++      enabled,
++      expectedGeneration: runtime.status().generation,
++      requestId: randomUUID(),
++    });
++  const command = (requestId = randomUUID()) => ({
++    type: "turn.submit",
++    threadId: row.id,
++    requestId,
++    options: {
++      ...original,
++      permissionMode: "full",
++      source: "client/turn/requested",
++      providerOptions: { model: "primary" },
++    },
++    target: { mode: "start" },
++  });
++  return { runtime, options, row, rows, set, command, statePath };
++}
++describe("server-owned effective execution", () => {
++  it.each(["thread.start", "turn.submit"])(
++    "%s overlays explicit and queued execution without changing source, input or permission fields",
++    (type) => {
++      const f = fixture(),
++        before = structuredClone(f.row);
++      f.set(true);
++      const requested = { ...f.command(), type, input: "same input" },
++        sent = f.runtime.beforeTransport(requested, "host");
++      expect(sent.options).toMatchObject(profile);
++      expect(sent.options.permissionMode).toBe("full");
++      expect(sent.options.source).toBe("client/turn/requested");
++      expect(sent.input).toBe(requested.input);
++      expect(requested.options).toMatchObject(original);
++      expect(f.row).toEqual(before);
++      expect(
++        f.runtime.snapshot().markers.thread![requested.requestId]!.requested,
++      ).toEqual(original);
++    },
++  );
++  it("keeps an effective profile for a steer-to-start race without claiming the active call switched", () => {
++    const f = fixture();
++    f.set(true);
++    const request = {
++      ...f.command(),
++      target: { mode: "auto", expectedTurnId: "active" },
++    };
++    expect(f.runtime.beforeTransport(request, "host").options).toMatchObject(
++      profile,
++    );
++    expect(f.runtime.snapshot().receipts.thread).toBeUndefined();
++  });
++  it("OFF at the final boundary wins over earlier ON preparation and restores by request ID", () => {
++    const f = fixture();
++    f.set(true);
++    const request = f.command();
++    f.runtime.record("thread", request.requestId, request.options);
++    const overlaid = f.runtime.beforeTransport(request, "host");
++    f.set(false);
++    expect(f.runtime.beforeTransport(overlaid, "host").options).toMatchObject(
++      original,
++    );
++    expect(
++      f.runtime.restore("thread", request.requestId, {
++        ...profile,
++        permissionMode: "full",
++        source: "native",
++      }),
++    ).toEqual({ ...original, permissionMode: "full", source: "native" });
++  });
++  it("immutable null inheritance, Fast disabled and permission source survive restore", () => {
++    const f = fixture();
++    f.row.source.lastExecution = null;
++    f.row.source.defaults = original;
++    f.row.source.allowFastServiceTier = false;
++    f.set(true);
++    const request = f.command();
++    f.runtime.record("thread", request.requestId, request.options);
++    f.set(false);
++    expect(f.runtime.beforeTransport(request, "host").options).toMatchObject({
++      ...original,
++      serviceTier: "default",
++    });
++    expect(
++      f.runtime.restore("thread", request.requestId, {
++        ...profile,
++        permissionMode: "workspace",
++        source: "native",
++      }),
++    ).toEqual({ permissionMode: "workspace", source: "native" });
++  });
++  it("keeps every request marker through native append rollback and restart without loading the plugin", () => {
++    const f = fixture();
++    f.set(true);
++    const a = f.command(),
++      b = f.command();
++    f.runtime.record("thread", a.requestId, a.options);
++    f.runtime.record("thread", b.requestId, b.options);
++    const restarted = createExecutionPolicyRuntime(f.options);
++    expect(
++      restarted.restore("thread", a.requestId, {
++        ...profile,
++        permissionMode: "full",
++      }),
++    ).toEqual({ ...original, permissionMode: "full" });
++    expect(restarted.restore("thread", b.requestId, { ...profile })).toEqual(
++      original,
++    );
++    expect(
++      restarted.beforeTransport(f.command(), "host").options,
++    ).toMatchObject(original);
++    restarted.attach();
++    expect(
++      restarted.beforeTransport(f.command(), "host").options,
++    ).toMatchObject(profile);
++    restarted.detach();
++    expect(
++      restarted.beforeTransport(f.command(), "host").options,
++    ).toMatchObject(original);
++  });
++  it("native availability and target host are rechecked after preparation", () => {
++    const f = fixture();
++    f.set(true);
++    f.row.available = false;
++    expect(f.runtime.dispatchWait("thread")).toBeTruthy();
++    expect(() => f.runtime.beforeTransport(f.command(), "host")).toThrow(
++      /unavailable/,
++    );
++    f.row.available = true;
++    expect(() =>
++      f.runtime.beforeTransport(f.command(), "different-host"),
++    ).toThrow(/host changed/);
++    f.set(false);
++    expect(
++      f.runtime.beforeTransport(f.command(), "host").options,
++    ).toMatchObject(original);
++  });
++  it("never starts dormant threads and leaves another provider and non-turn commands unchanged", () => {
++    const f = fixture();
++    f.row.archived = true;
++    f.row.paused = true;
++    f.row.status = "error";
++    f.rows.push({
++      ...structuredClone(f.row),
++      id: "other",
++      providerId: "other-provider",
++    });
++    f.set(true);
++    expect(f.runtime.status().eligible).toBe(0);
++    const other = { ...f.command(), threadId: "other" };
++    expect(f.runtime.beforeTransport(other, "host")).toBe(other);
++    const stop = { ...f.command(), type: "thread.stop" };
++    expect(f.runtime.beforeTransport(stop, "host")).toBe(stop);
++  });
++  it("refuses conflicting source writes and does not silently persist explicit picks", () => {
++    const f = fixture();
++    f.set(true);
++    expect(f.runtime.suppressSticky("thread")).toBe(true);
++    expect(() => f.runtime.guard("thread")).toThrow(/Turn off/);
++    f.row.source.modelOverride = "changed";
++    expect(() => f.runtime.beforeTransport(f.command(), "host")).toThrow(
++      /immutable/,
++    );
++    expect(
++      f.runtime.snapshot().cycle!.snapshots.thread!.source.modelOverride,
++    ).toBeNull();
++  });
++  it("deduplicates UUIDs across restart and rejects reused IDs or stale generations", () => {
++    const f = fixture(),
++      id = randomUUID();
++    f.runtime.set({ enabled: true, expectedGeneration: 0, requestId: id });
++    f.runtime.set({ enabled: true, expectedGeneration: 0, requestId: id });
++    expect(f.runtime.status().generation).toBe(1);
++    const restarted = createExecutionPolicyRuntime(f.options);
++    restarted.attach();
++    restarted.set({ enabled: true, expectedGeneration: 0, requestId: id });
++    expect(restarted.status().generation).toBe(1);
++    expect(() =>
++      restarted.set({ enabled: false, expectedGeneration: 1, requestId: id }),
++    ).toThrow(/another action/);
++    expect(() =>
++      restarted.set({
++        enabled: false,
++        expectedGeneration: 0,
++        requestId: randomUUID(),
++      }),
++    ).toThrow(/another device/);
++  });
++  it("corrupt journals block only the scoped execution without inferring OFF", () => {
++    const f = fixture();
++    writeFileSync(f.statePath, '{"version":1}');
++    const bad = createExecutionPolicyRuntime(f.options);
++    expect(bad.status().available).toBe(false);
++    expect(() => bad.beforeTransport(f.command(), "host")).toThrow(/journal/);
++    expect(() => bad.attach()).toThrow(/journal/);
++    const other = { ...f.command(), threadId: "unrelated" };
++    expect(bad.beforeTransport(other, "host")).toBe(other);
++  });
++  it("a failed delivery-receipt write preserves the accepted transport result and does not send twice", () => {
++    const f = fixture();
++    let fail = false;
++    const runtime = createExecutionPolicyRuntime({
++      ...f.options,
++      writeState: () => {
++        if (fail) throw Error("disk full");
++      },
++    });
++    runtime.attach();
++    runtime.set({
++      enabled: true,
++      expectedGeneration: 0,
++      requestId: randomUUID(),
++    });
++    const request = f.command();
++    runtime.beforeTransport(request, "host");
++    fail = true;
++    expect(() => runtime.transportResult(request, { ok: true })).not.toThrow();
++    expect(runtime.status().error).toMatch(/receipt/);
++  });
++  it("restores a newly created explicit profile without flattening the immutable null source snapshot", () => {
++    const f = fixture();
++    f.set(true);
++    const row = {
++      ...structuredClone(f.row),
++      id: "new",
++      source: {
++        ...f.row.source,
++        lastExecution: null,
++        defaults: { model: null, reasoningLevel: null, serviceTier: null },
++      },
++    };
++    f.rows.push(row);
++    f.runtime.noteCreation(row.id, {
++      model: "new-primary",
++      reasoningLevel: "high",
++      serviceTier: "fast",
++    });
++    const command = {
++      ...f.command(),
++      threadId: row.id,
++      options: {
++        model: "new-primary",
++        reasoningLevel: "high",
++        serviceTier: "fast",
++        permissionMode: "full",
++      },
++    };
++    f.runtime.record(row.id, command.requestId, command.options);
++    f.runtime.beforeTransport(command, "host");
++    f.set(false);
++    expect(f.runtime.beforeTransport(command, "host").options).toEqual(
++      command.options,
++    );
++    expect(
++      f.runtime.snapshot().cycle!.snapshots.new!.source.lastExecution,
++    ).toBeNull();
++  });
++  it("treats deletion of an existing native journal as corruption rather than an implicit OFF", () => {
++    const f = fixture();
++    f.set(true);
++    rmSync(f.statePath);
++    const runtime = createExecutionPolicyRuntime({
++      ...f.options,
++      allowMissing: false,
++    });
++    expect(runtime.status().available).toBe(false);
++    expect(() => runtime.beforeTransport(f.command(), "host")).toThrow(
++      /journal/,
++    );
++  });
++});
+diff --git a/apps/server/src/services/execution-policies/runtime.ts b/apps/server/src/services/execution-policies/runtime.ts
+new file mode 100644
+index 0000000..f98abbd
+--- /dev/null
++++ b/apps/server/src/services/execution-policies/runtime.ts
+@@ -0,0 +1,654 @@
++import { createHash, randomUUID } from "node:crypto";
++import {
++  closeSync,
++  existsSync,
++  fsyncSync,
++  mkdirSync,
++  openSync,
++  readFileSync,
++  renameSync,
++  unlinkSync,
++  writeFileSync,
++} from "node:fs";
++import { dirname } from "node:path";
++import { z } from "zod";
++import { reasoningLevelSchema, serviceTierSchema } from "@bb/domain";
++import type {
++  ExperimentalExecutionProfile,
++  ExperimentalExecutionPolicyIssue,
++  ExperimentalExecutionPolicySet,
++  ExperimentalExecutionPolicyState,
++} from "@get-bb/plugin-sdk";
++
++export const executionPolicySemantics = [
++  "final-host-boundary",
++  "explicit-and-queued",
++  "preserve-source-and-null",
++  "durable-request-provenance",
++  "immutable-cycle-snapshots",
++  "cas-and-request-dedup",
++  "safe-native-boundaries",
++  "native-host-catalog",
++  "restore-after-unload",
++] as const;
++export const executionProfileSchema = z
++  .object({
++    model: z.string().min(1).max(200),
++    reasoningLevel: reasoningLevelSchema,
++    serviceTier: serviceTierSchema,
++  })
++  .strict();
++const profileFieldsSchema = z.object({
++  model: z.string().nullable(),
++  reasoningLevel: z.string().nullable(),
++  serviceTier: z.string().nullable(),
++});
++export type ProfileFields = z.infer<typeof profileFieldsSchema>;
++const sourceSchema = z.object({
++  providerId: z.string(),
++  allowFastServiceTier: z.boolean(),
++  modelOverride: z.string().nullable(),
++  reasoningLevelOverride: z.string().nullable(),
++  lastExecution: profileFieldsSchema.nullable(),
++  defaults: profileFieldsSchema,
++});
++const snapshotSchema = z.object({
++  source: sourceSchema,
++  creation: profileFieldsSchema.nullable(),
++  sessionSnapshot: z.unknown(),
++  capturedAt: z.number(),
++  hostId: z.string().nullable(),
++});
++const cycleSchema = z.object({
++  id: z.uuid(),
++  snapshots: z.record(z.string(), snapshotSchema),
++});
++const markerSchema = z.object({
++  requestId: z.string(),
++  lastExecution: profileFieldsSchema.nullable(),
++  requested: profileFieldsSchema,
++  restoreProfile: profileFieldsSchema,
++  generation: z.number().int().nonnegative(),
++  cycleId: z.uuid(),
++});
++const receiptSchema = z.object({
++  generation: z.number(),
++  requestId: z.string(),
++  hostId: z.string(),
++  overlay: z.boolean(),
++  effective: profileFieldsSchema,
++  accepted: z.boolean(),
++  failure: z.string().nullable(),
++});
++const stateSchema = z
++  .object({
++    version: z.literal(1),
++    providerId: z.string(),
++    profile: executionProfileSchema,
++    generation: z.number().int().nonnegative(),
++    phase: z.enum(["off", "enabling", "on", "disabling"]),
++    cycle: cycleSchema.nullable(),
++    history: z.array(cycleSchema),
++    markers: z.record(z.string(), z.record(z.string(), markerSchema)),
++    receipts: z.record(z.string(), receiptSchema),
++    operations: z.record(
++      z.string(),
++      z.object({ enabled: z.boolean(), generation: z.number() }),
++    ),
++    conflicts: z.record(z.string(), z.string()),
++  })
++  .strict()
++  .refine((s) => s.phase === "off" || s.cycle !== null);
++type State = z.infer<typeof stateSchema>;
++export type ExecutionPolicySource = z.infer<typeof sourceSchema>;
++export interface ExecutionPolicyRow {
++  id: string;
++  providerId: string;
++  hostId: string | null;
++  deleted: boolean;
++  archived: boolean;
++  paused: boolean;
++  status: string;
++  activeTurnId: string | null;
++  lastRequestId: string | null;
++  available: boolean;
++  unavailableReason: string | null;
++  source: ExecutionPolicySource;
++  sessionSnapshot: unknown;
++}
++export interface ExecutionPolicyAdapter {
++  list(): ExecutionPolicyRow[];
++  get(id: string): ExecutionPolicyRow | null;
++}
++export interface ExecutionPolicyCommand {
++  type: string;
++  threadId: string;
++  requestId: string;
++  options: Record<string, unknown>;
++  target?: { mode?: string; expectedTurnId?: string | null };
++}
++const clone = <T>(v: T): T => structuredClone(v);
++const digest = (v: unknown) =>
++  createHash("sha256").update(JSON.stringify(v)).digest("hex");
++const intent = (source: ExecutionPolicySource) => ({
++  ...source,
++  lastExecution: null,
++});
++export const profileFields = (
++  v: {
++    model?: unknown;
++    reasoningLevel?: unknown;
++    serviceTier?: unknown;
++  } | null,
++): ProfileFields | null =>
++  v === null
++    ? null
++    : {
++        model: typeof v.model === "string" ? v.model : null,
++        reasoningLevel:
++          typeof v.reasoningLevel === "string" ? v.reasoningLevel : null,
++        serviceTier: typeof v.serviceTier === "string" ? v.serviceTier : null,
++      };
++export class ExecutionPolicyConflict extends Error {
++  readonly code = "execution_policy_conflict";
++}
++export function createExecutionPolicyRuntime(args: {
++  statePath: string;
++  providerId: string;
++  profile: ExperimentalExecutionProfile;
++  adapter: ExecutionPolicyAdapter;
++  changed?: () => void;
++  now?: () => number;
++  allowMissing?: boolean;
++  writeState?: (state: State) => void;
++}) {
++  const profile = executionProfileSchema.parse(args.profile),
++    now = args.now ?? Date.now;
++  let state: State = {
++    version: 1,
++    providerId: args.providerId,
++    profile,
++    generation: 0,
++    phase: "off",
++    cycle: null,
++    history: [],
++    markers: {},
++    receipts: {},
++    operations: {},
++    conflicts: {},
++  };
++  const creations = new Map<string, ProfileFields | null>();
++  let loadError: string | null = null,
++    resultWriteError: string | null = null,
++    attached = false;
++  try {
++    state = stateSchema.parse(JSON.parse(readFileSync(args.statePath, "utf8")));
++    if (
++      state.providerId !== args.providerId ||
++      digest(state.profile) !== digest(profile)
++    )
++      throw Error("Policy identity changed");
++  } catch (error) {
++    if (
++      !args.allowMissing ||
++      !(error instanceof Error && "code" in error && error.code === "ENOENT")
++    )
++      loadError =
++        "Could not read the execution-policy journal. Dispatch is blocked until recovery.";
++  }
++  const desired = () => state.phase === "on" || state.phase === "enabling";
++  const enabled = () => attached && desired();
++  const check = () => {
++    if (loadError) throw Error(loadError);
++  };
++  const inScope = (row: ExecutionPolicyRow | null): row is ExecutionPolicyRow =>
++    row !== null && row.providerId === args.providerId && !row.deleted;
++  function persist(next: State) {
++    check();
++    if (args.writeState) args.writeState(clone(next));
++    else {
++      mkdirSync(dirname(args.statePath), { recursive: true, mode: 0o700 });
++      const tmp = args.statePath + "." + randomUUID() + ".tmp";
++      let fd: number | null = null;
++      try {
++        fd = openSync(tmp, "wx", 0o600);
++        writeFileSync(fd, JSON.stringify(next));
++        fsyncSync(fd);
++        closeSync(fd);
++        fd = null;
++        renameSync(tmp, args.statePath);
++        const directory = openSync(dirname(args.statePath), "r");
++        try {
++          fsyncSync(directory);
++        } finally {
++          closeSync(directory);
++        }
++      } finally {
++        if (fd !== null) closeSync(fd);
++        if (existsSync(tmp)) unlinkSync(tmp);
++      }
++    }
++    state = next;
++    args.changed?.();
++  }
++  const change = (fn: (s: State) => void) => {
++    const next = clone(state);
++    fn(next);
++    persist(next);
++  };
++  function capture(row: ExecutionPolicyRow) {
++    if (!enabled() || !inScope(row) || state.cycle?.snapshots[row.id]) return;
++    change((s) => {
++      if (!s.cycle) throw Error("Missing active cycle");
++      s.cycle.snapshots[row.id] = {
++        source: clone(row.source),
++        creation: clone(creations.get(row.id) ?? null),
++        sessionSnapshot: clone(row.sessionSnapshot),
++        capturedAt: now(),
++        hostId: row.hostId,
++      };
++    });
++  }
++  function restoreProfile(
++    source: ExecutionPolicySource,
++    last: ProfileFields | null,
++  ): ProfileFields {
++    return {
++      model: source.modelOverride ?? last?.model ?? source.defaults.model,
++      reasoningLevel:
++        source.reasoningLevelOverride ??
++        last?.reasoningLevel ??
++        source.defaults.reasoningLevel,
++      serviceTier: source.allowFastServiceTier
++        ? (last?.serviceTier ?? source.defaults.serviceTier ?? "default")
++        : "default",
++    };
++  }
++  function reconcile() {
++    check();
++    const rows = args.adapter.list(),
++      pending: ExperimentalExecutionPolicyIssue[] = [],
++      unavailable: ExperimentalExecutionPolicyIssue[] = [],
++      conflicts: ExperimentalExecutionPolicyIssue[] = [];
++    if (enabled()) for (const row of rows) capture(row);
++    for (const row of rows.filter(inScope)) {
++      const snapshot = state.cycle?.snapshots[row.id];
++      if (
++        desired() &&
++        snapshot &&
++        digest(intent(row.source)) !== digest(intent(snapshot.source))
++      )
++        conflicts.push({
++          threadId: row.id,
++          reason:
++            "Original settings differ from the immutable activation snapshot.",
++        });
++      const stored = state.receipts[row.id],
++        receipt = stored?.requestId === row.lastRequestId ? stored : null;
++      if (enabled() && receipt?.overlay && receipt.failure)
++        unavailable.push({
++          threadId: row.id,
++          hostId: row.hostId,
++          reason: receipt.failure,
++        });
++      if (row.archived || row.paused || row.status === "error") continue;
++      const active =
++        Boolean(row.activeTurnId) ||
++        row.status === "active" ||
++        row.status === "stopping";
++      if (enabled()) {
++        if (!row.available)
++          unavailable.push({
++            threadId: row.id,
++            hostId: row.hostId,
++            reason:
++              row.unavailableReason ??
++              "The policy model is unavailable on the target host.",
++          });
++        if (
++          active &&
++          (!receipt ||
++            receipt.generation !== state.generation ||
++            !receipt.accepted)
++        )
++          pending.push({
++            threadId: row.id,
++            reason:
++              "The current turn continues. The profile applies at the next safe native boundary.",
++          });
++      } else if (active && receipt?.overlay)
++        pending.push({
++          threadId: row.id,
++          reason:
++            "The current turn is finishing. The original profile applies to the next turn.",
++        });
++    }
++    const phase = enabled()
++      ? pending.length || unavailable.length || conflicts.length
++        ? "enabling"
++        : "on"
++      : desired() && !attached
++        ? state.phase
++        : pending.length
++          ? "disabling"
++          : "off";
++    if (phase !== state.phase)
++      change((s) => {
++        s.phase = phase;
++      });
++    return { rows, pending, unavailable, conflicts };
++  }
++  const api = {
++    noteCreation(
++      threadId: string,
++      request: {
++        model?: unknown;
++        reasoningLevel?: unknown;
++        serviceTier?: unknown;
++      },
++    ) {
++      creations.set(threadId, profileFields(request));
++    },
++    initialize() {
++      if (!existsSync(args.statePath)) persist(state);
++    },
++    suspend() {
++      attached = false;
++    },
++    attach() {
++      check();
++      attached = true;
++    },
++    detach() {
++      attached = false;
++      if (desired())
++        change((s) => {
++          s.generation++;
++          s.phase = "disabling";
++        });
++    },
++    enabled,
++    selected: desired,
++    profile,
++    capture,
++    status(): ExperimentalExecutionPolicyState {
++      let view;
++      try {
++        view = reconcile();
++      } catch (error) {
++        return {
++          available: !loadError,
++          phase: state.phase,
++          generation: state.generation,
++          enabled: enabled(),
++          profile,
++          eligible: 0,
++          ready: 0,
++          pending: [],
++          unavailable: [],
++          conflicts: [],
++          error:
++            loadError ??
++            (error instanceof Error
++              ? error.message
++              : "Journal state is unconfirmed."),
++        };
++      }
++      const eligible = view.rows.filter(
++        (r) => inScope(r) && !r.archived && !r.paused && r.status !== "error",
++      );
++      return {
++        available: !loadError,
++        phase: state.phase,
++        generation: state.generation,
++        enabled: enabled(),
++        profile,
++        eligible: eligible.length,
++        ready: enabled()
++          ? Math.max(
++              0,
++              eligible.length -
++                new Set(
++                  [...view.pending, ...view.unavailable, ...view.conflicts].map(
++                    (x) => x.threadId,
++                  ),
++                ).size,
++            )
++          : 0,
++        pending: view.pending,
++        unavailable: view.unavailable,
++        conflicts: [
++          ...view.conflicts,
++          ...Object.entries(state.conflicts).map(([threadId, reason]) => ({
++            threadId,
++            reason,
++          })),
++        ],
++        error: resultWriteError,
++      };
++    },
++    set(input: ExperimentalExecutionPolicySet) {
++      check();
++      if (!attached)
++        throw new ExecutionPolicyConflict("This policy handle is released.");
++      const {
++        enabled: want,
++        expectedGeneration,
++        requestId,
++      } = z
++        .object({
++          enabled: z.boolean(),
++          expectedGeneration: z.number().int().nonnegative(),
++          requestId: z.uuid(),
++        })
++        .strict()
++        .parse(input);
++      const previous = state.operations[requestId];
++      if (previous) {
++        if (previous.enabled !== want)
++          throw new ExecutionPolicyConflict(
++            "This operation ID was used for another action.",
++          );
++        return api.status();
++      }
++      if (state.generation !== expectedGeneration)
++        throw new ExecutionPolicyConflict(
++          "State changed on another device. Refresh the state.",
++        );
++      if (want === enabled()) {
++        change((s) => {
++          s.operations[requestId] = { enabled: want, generation: s.generation };
++        });
++        return api.status();
++      }
++      const rows = args.adapter.list();
++      change((s) => {
++        if (want) {
++          s.conflicts = {};
++          if (s.cycle) s.history.push(s.cycle);
++          s.cycle = {
++            id: randomUUID(),
++            snapshots: Object.fromEntries(
++              rows.filter(inScope).map((row) => [
++                row.id,
++                {
++                  source: clone(row.source),
++                  creation: clone(creations.get(row.id) ?? null),
++                  sessionSnapshot: clone(row.sessionSnapshot),
++                  capturedAt: now(),
++                  hostId: row.hostId,
++                },
++              ]),
++            ),
++          };
++        }
++        s.generation++;
++        s.phase = want ? "enabling" : "disabling";
++        s.operations[requestId] = { enabled: want, generation: s.generation };
++      });
++      return api.status();
++    },
++    guard(threadId: string) {
++      check();
++      if (!enabled() && !(attached && state.phase === "disabling")) return;
++      const row = args.adapter.get(threadId);
++      if (!inScope(row)) return;
++      capture(row);
++      change((s) => {
++        s.conflicts[threadId] =
++          "Changing the original profile while the policy is active was refused. Turn it off first.";
++      });
++      throw new ExecutionPolicyConflict(
++        "Turn off the active execution policy before changing individual settings.",
++      );
++    },
++    suppressSticky(threadId: string) {
++      check();
++      return (
++        (enabled() || (attached && state.phase === "disabling")) &&
++        inScope(args.adapter.get(threadId))
++      );
++    },
++    record(
++      threadId: string,
++      requestId: string,
++      execution: Record<string, unknown>,
++    ) {
++      check();
++      if (!enabled()) return;
++      const row = args.adapter.get(threadId);
++      if (!inScope(row)) return;
++      capture(row);
++      const snapshot = state.cycle?.snapshots[threadId];
++      if (!snapshot) return;
++      const prior = Object.values(state.markers[threadId] ?? {}).find(
++        (m) => m.cycleId === state.cycle?.id,
++      );
++      const original = prior
++        ? prior.lastExecution
++        : (snapshot.source.lastExecution ??
++          (snapshot.creation ? profileFields(execution) : null));
++      change((s) => {
++        if (!s.cycle) throw Error("Missing active cycle");
++        s.markers[threadId] ??= {};
++        s.markers[threadId]![requestId] = {
++          requestId,
++          lastExecution: original,
++          requested: profileFields(execution)!,
++          restoreProfile: restoreProfile(snapshot.source, original),
++          generation: s.generation,
++          cycleId: s.cycle.id,
++        };
++      });
++    },
++    restore<T extends Record<string, unknown>>(
++      threadId: string,
++      requestId: string,
++      execution: T,
++    ): T {
++      check();
++      const marker = state.markers[threadId]?.[requestId];
++      if (!marker) return execution;
++      const restored = { ...execution };
++      for (const key of ["model", "reasoningLevel", "serviceTier"] as const) {
++        if (marker.lastExecution === null) delete restored[key];
++        else Object.assign(restored, { [key]: marker.lastExecution[key] });
++      }
++      return restored;
++    },
++    beforeTransport<T extends ExecutionPolicyCommand>(
++      command: T,
++      hostId: string,
++    ): T {
++      if (!["thread.start", "turn.submit"].includes(command.type))
++        return command;
++      const row = args.adapter.get(command.threadId);
++      if (!inScope(row)) return command;
++      check();
++      capture(row);
++      const overlay = enabled();
++      if (overlay && !state.markers[row.id]?.[command.requestId])
++        api.record(row.id, command.requestId, command.options);
++      const marker = state.markers[row.id]?.[command.requestId];
++      if (!overlay && !marker) return command;
++      if (overlay && !row.available)
++        throw new ExecutionPolicyConflict(
++          row.unavailableReason ??
++            "The policy model is unavailable on this host.",
++        );
++      if (overlay && row.hostId !== hostId)
++        throw new ExecutionPolicyConflict(
++          "The target host changed before dispatch. Retry after refreshing the native catalog.",
++        );
++      if (
++        overlay &&
++        digest(intent(row.source)) !==
++          digest(intent(state.cycle!.snapshots[row.id]!.source))
++      )
++        throw new ExecutionPolicyConflict(
++          "Original settings conflict with the immutable activation snapshot.",
++        );
++      const restore = marker?.restoreProfile;
++      if (!overlay && restore && !restore.model)
++        throw new ExecutionPolicyConflict(
++          "The inherited original model is unresolved. Select a model before sending.",
++        );
++      const options = { ...command.options, ...(overlay ? profile : restore) };
++      if (command.target?.expectedTurnId == null)
++        change((s) => {
++          s.receipts[row.id] = {
++            generation: s.generation,
++            requestId: command.requestId,
++            hostId,
++            overlay,
++            effective: profileFields(options)!,
++            accepted: false,
++            failure: null,
++          };
++        });
++      return { ...command, options };
++    },
++    transportResult(
++      command: ExecutionPolicyCommand,
++      response: { ok: boolean; errorCode?: string } | null,
++      error?: unknown,
++    ) {
++      const receipt = state.receipts[command.threadId];
++      if (
++        !receipt ||
++        receipt.requestId !== command.requestId ||
++        command.target?.expectedTurnId != null
++      )
++        return;
++      try {
++        change((s) => {
++          const r = s.receipts[command.threadId]!;
++          r.accepted = response?.ok === true;
++          r.failure = r.accepted
++            ? null
++            : error
++              ? "Host delivery is unconfirmed. No profile fallback was attempted."
++              : `Host rejected the request: ${String(response?.errorCode ?? "unknown_error").slice(0, 100)}`;
++        });
++        resultWriteError = null;
++      } catch {
++        resultWriteError =
++          "Could not save the delivery receipt. The current work was not interrupted.";
++      }
++    },
++    dispatchWait(threadId: string) {
++      check();
++      if (!enabled()) return null;
++      const row = args.adapter.get(threadId);
++      return inScope(row) && !row.available
++        ? (row.unavailableReason ??
++            "Waiting for the policy model on the target host.")
++        : null;
++    },
++    snapshot: () => clone(state),
++  };
++  return api;
++}
++export type ExecutionPolicyRuntime = ReturnType<
++  typeof createExecutionPolicyRuntime
++>;
+diff --git a/apps/server/src/services/execution-policies/service.test.ts b/apps/server/src/services/execution-policies/service.test.ts
+new file mode 100644
+index 0000000..67c49ac
+--- /dev/null
++++ b/apps/server/src/services/execution-policies/service.test.ts
+@@ -0,0 +1,798 @@
++import { describe, it, expect } from "vitest";
++import { createProviderRegistryService } from "../providers/provider-registry.js";
++import { registerFirstPartyProviders } from "../../../test/helpers/provider-registry.js";
++import {
++  sendQueuedMessage,
++  createAutomaticQueuedMessageGroupEligibility,
++} from "../threads/queued-messages.js";
++import {
++  waitForQueuedCommand,
++  reportQueuedCommandSuccess,
++} from "../../../test/helpers/commands.js";
++import { randomUUID } from "node:crypto";
++import {
++  mkdirSync,
++  rmSync,
++  existsSync,
++  readFileSync,
++  readdirSync,
++} from "node:fs";
++import { join } from "node:path";
++import {
++  listServerOwnedEntries,
++  writeServerArchive,
++  extractServerArchive,
++  installImportedServerFiles,
++} from "@bb/server-archive";
++import {
++  getThreadExecutionOverride,
++  createQueuedThreadMessage,
++  rootConnectionOf,
++  setThreadExecutionOverride,
++} from "@bb/db";
++import {
++  applyThreadExecutionOverride,
++  recoverThreadModelOverride,
++} from "../threads/thread-execution-override.js";
++import {
++  encodeClientTurnRequestIdNumber,
++  threadScope,
++  type ResolvedThreadExecutionOptions,
++} from "@bb/domain";
++import {
++  seedThreadFixture,
++  seedQueuedMessage,
++  seedThreadRuntimeState,
++} from "../../../test/helpers/seed.js";
++import { withTestHarness } from "../../../test/helpers/test-app.js";
++import { moveThreadStatus } from "../../../test/helpers/thread-status.js";
++import { seedModelCatalog } from "../../../test/helpers/provider-model-catalogs.js";
++import { availableModelFixture } from "../../../test/helpers/available-models.js";
++import {
++  registerHostRpcResponder,
++  registerProviderHostRpcResponder,
++} from "../../../test/helpers/host-rpc.js";
++import {
++  buildExecutionOptions,
++  buildThreadStartCommand,
++} from "../threads/thread-commands.js";
++import {
++  appendThreadEventInTransaction,
++  getLastExecutionOptions,
++} from "../threads/thread-events.js";
++import { callHostOnlineRpc } from "../hosts/online-rpc.js";
++import {
++  createExecutionPolicyService,
++  executionPolicyService,
++} from "./service.js";
++const policy = {
++  id: "economy",
++  providerId: "codex",
++  profile: {
++    model: "gpt-6-luna",
++    reasoningLevel: "medium",
++    serviceTier: "default",
++  },
++};
++const requested: ResolvedThreadExecutionOptions = {
++  model: "gpt-5",
++  reasoningLevel: "high",
++  serviceTier: "fast",
++  permissionMode: "full",
++  source: "client/turn/requested",
++};
++const change = (
++  handle: ReturnType<
++    NonNullable<ReturnType<typeof executionPolicyService>>["stage"]
++  >["controller"],
++  enabled: boolean,
++) =>
++  handle.set({
++    enabled,
++    expectedGeneration: handle.status().generation,
++    requestId: randomUUID(),
++  });
++describe("native execution-policy integration", () => {
++  it("finishes OFF and notifies subscribers on the native idle event without status polling", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!;
++      seedThreadRuntimeState(h.deps, {
++        environmentId: f.environment.id,
++        providerThreadId: "native-session",
++        threadId: f.thread.id,
++      });
++      await seedModelCatalog(h, {
++        hostId: f.host.id,
++        providerId: "codex",
++        models: [
++          availableModelFixture({
++            model: "gpt-6-luna",
++            reasoningLevels: ["medium"],
++          }),
++        ],
++      });
++      const lease = service.stage("economy", policy);
++      lease.activate();
++      change(lease.controller, true);
++      const command = await buildThreadStartCommand(h.deps, {
++        environment: f.environment,
++        execution: requested,
++        fork: null,
++        permissionEscalation: "ask",
++        input: [{ type: "text", text: "native input", mentions: [] }],
++        projectId: f.project.id,
++        providerId: "codex",
++        requestId: encodeClientTurnRequestIdNumber({ value: 1 }),
++        syncGeneratedTitle: false,
++        thread: f.thread,
++      });
++      service.transportResult(service.beforeTransport(command, f.host.id), {
++        ok: true,
++      });
++      expect(
++        moveThreadStatus(h.deps, { threadId: f.thread.id, move: "run.started" })
++          .applied,
++      ).toBe(true);
++      expect(change(lease.controller, false).phase).toBe("disabling");
++      let notifications = 0;
++      lease.controller.subscribe(() => {
++        notifications++;
++      });
++      expect(
++        moveThreadStatus(h.deps, {
++          threadId: f.thread.id,
++          move: "run.succeeded",
++        }).applied,
++      ).toBe(true);
++      await new Promise<void>((resolve) => setImmediate(resolve));
++      const directory = join(h.deps.config.dataDir, "execution-policies"),
++        journal = readdirSync(directory).find(
++          (name) => name.endsWith(".json") && name !== "registry.json",
++        )!;
++      expect(
++        JSON.parse(readFileSync(join(directory, journal), "utf8")).phase,
++      ).toBe("off");
++      expect(notifications).toBeGreaterThan(0);
++      expect(() => service.guard(f.thread.id)).not.toThrow();
++      lease.controller.release();
++    });
++  });
++  it("preserves the native queued-start baseline of a pending thread created before registration", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h, { thread: { status: "pending" } }),
++        service = executionPolicyService(h.db)!;
++      createQueuedThreadMessage(h.db, h.hub, {
++        threadId: f.thread.id,
++        origin: "app",
++        content: [{ type: "text", text: "pending input", mentions: [] }],
++        model: "preexisting-primary",
++        reasoningLevel: "high",
++        serviceTier: "fast",
++        permissionMode: "full",
++        waitingOn: null,
++        sendAt: null,
++        payload: { kind: "inline" },
++        systemNotice: null,
++      });
++      const lease = service.stage("economy", policy);
++      lease.activate();
++      change(lease.controller, true);
++      const requestId = encodeClientTurnRequestIdNumber({ value: 10 });
++      service.record(f.thread.id, requestId, requested);
++      change(lease.controller, false);
++      expect(
++        service.restore(f.thread.id, requestId, {
++          ...policy.profile,
++          permissionMode: "workspace",
++          source: "native",
++        }),
++      ).toEqual({
++        model: "preexisting-primary",
++        reasoningLevel: "high",
++        serviceTier: "fast",
++        permissionMode: "workspace",
++        source: "native",
++      });
++      lease.controller.release();
++    });
++  });
++  it.each(["release-first", "activate-first"])(
++    "preserves native selection across %s lease replacement and restores after unload",
++    async (order) => {
++      await withTestHarness(async (h) => {
++        const f = seedThreadFixture(h),
++          service = executionPolicyService(h.db)!;
++        const staged = service.stage("economy", policy);
++        expect(() => change(staged.controller, true)).toThrow(/not active/);
++        staged.activate();
++        change(staged.controller, true);
++        expect(() => service.stage("competing", policy)).toThrow(
++          /already owns/,
++        );
++        const next = service.stage("economy", policy);
++        if (order === "release-first") {
++          staged.controller.release();
++          expect(next.controller.status().enabled).toBe(true);
++          next.activate();
++        } else {
++          next.activate();
++          staged.controller.release();
++        }
++        expect(next.controller.status().enabled).toBe(true);
++        expect(next.controller.status().generation).toBe(1);
++        const requestId = encodeClientTurnRequestIdNumber({ value: 1 });
++        service.record(f.thread.id, requestId, requested);
++        next.controller.release();
++        expect(() => next.controller.status()).toThrow(/released/);
++        expect(service.suppressSticky(f.thread.id)).toBe(false);
++        expect(
++          service.restore(f.thread.id, requestId, {
++            ...policy.profile,
++            permissionMode: "full",
++            source: "native",
++          }),
++        ).toEqual({ permissionMode: "full", source: "native" });
++      });
++    },
++  );
++  it("shares the actual native append transaction and retains restore provenance after rollback/restart", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!;
++      const lease = service.stage("economy", policy);
++      lease.activate();
++      change(lease.controller, true);
++      const requestId = encodeClientTurnRequestIdNumber({ value: 2 });
++      expect(() =>
++        h.db.transaction((tx) => {
++          expect(rootConnectionOf(tx)).toBe(h.db);
++          appendThreadEventInTransaction(tx, {
++            threadId: f.thread.id,
++            environmentId: f.environment.id,
++            type: "client/turn/requested",
++            scope: threadScope(),
++            data: {
++              requestId,
++              execution: requested,
++              initiator: "user",
++              input: [{ type: "text", text: "unchanged", mentions: [] }],
++              target: { kind: "new-turn" },
++              direction: "outbound",
++              request: { method: "turn/start", params: {} },
++              source: "tell",
++              senderThreadId: null,
++            },
++          });
++          throw Error("rollback");
++        }),
++      ).toThrow(/rollback/);
++      expect(getLastExecutionOptions(h.deps, f.thread.id)).toBeNull();
++      const restarted = createExecutionPolicyService(h.deps);
++      expect(
++        restarted.restore(f.thread.id, requestId, {
++          ...policy.profile,
++          permissionMode: "full",
++          source: "native",
++        }),
++      ).toEqual({ permissionMode: "full", source: "native" });
++      service.shutdown();
++      lease.controller.release();
++      const resumed = createExecutionPolicyService(h.deps),
++        again = resumed.stage("economy", policy);
++      again.activate();
++      expect(again.controller.status().enabled).toBe(true);
++      again.controller.release();
++    });
++  });
++  it("applies the overlay in the real final host-RPC send and preserves caller commands and source options", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!;
++      await seedModelCatalog(h, {
++        hostId: f.host.id,
++        providerId: "codex",
++        models: [
++          availableModelFixture({
++            model: "gpt-6-luna",
++            reasoningLevels: ["medium"],
++          }),
++          availableModelFixture({ model: "gpt-5", reasoningLevels: ["high"] }),
++        ],
++      });
++      const lease = service.stage("economy", policy);
++      lease.activate();
++      change(lease.controller, true);
++      const execution = await buildExecutionOptions(
++        h.deps,
++        { model: "gpt-5", reasoningLevel: "high" },
++        { threadId: f.thread.id },
++      );
++      const command = await buildThreadStartCommand(h.deps, {
++        environment: f.environment,
++        execution,
++        fork: null,
++        permissionEscalation: "ask",
++        input: [{ type: "text", text: "unchanged", mentions: [] }],
++        projectId: f.project.id,
++        providerId: "codex",
++        requestId: encodeClientTurnRequestIdNumber({ value: 3 }),
++        syncGeneratedTitle: false,
++        thread: f.thread,
++      });
++      const original = structuredClone(command),
++        overrides = getThreadExecutionOverride(h.db, f.thread.id);
++      const responder = registerHostRpcResponder(h, {
++        hostId: f.host.id,
++        sessionId: f.session.id,
++        handle: () => ({
++          ok: true,
++          result: { providerThreadId: "native-session" },
++        }),
++      });
++      await callHostOnlineRpc(h.deps, {
++        hostId: f.host.id,
++        command,
++        timeoutMs: 1000,
++      });
++      const sent = responder.requests.at(-1)!.command;
++      expect(sent.type).toBe("thread.start");
++      if (sent.type !== "thread.start") throw Error("Unexpected command");
++      expect(sent.options).toMatchObject(policy.profile);
++      expect(sent.options.permissionMode).toBe(command.options.permissionMode);
++      expect(sent.input).toEqual(command.input);
++      expect(command).toEqual(original);
++      expect(getThreadExecutionOverride(h.db, f.thread.id)).toEqual(overrides);
++      change(lease.controller, false);
++      await callHostOnlineRpc(h.deps, {
++        hostId: f.host.id,
++        command: {
++          ...command,
++          requestId: encodeClientTurnRequestIdNumber({ value: 4 }),
++        },
++        timeoutMs: 1000,
++      });
++      expect(responder.requests.at(-1)!.command).toMatchObject({
++        options: { model: "gpt-5", reasoningLevel: "high" },
++      });
++      responder.unregister();
++      lease.controller.release();
++    });
++  });
++  it("routes an explicit queued request through native dispatch while preserving immutable source and raw queue input", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!;
++      seedThreadRuntimeState(h.deps, {
++        environmentId: f.environment.id,
++        providerThreadId: "existing-session",
++        threadId: f.thread.id,
++        model: "gpt-5",
++        reasoningLevel: "high",
++      });
++      await seedModelCatalog(h, {
++        hostId: f.host.id,
++        providerId: "codex",
++        models: [
++          availableModelFixture({
++            model: "gpt-6-luna",
++            reasoningLevels: ["medium"],
++          }),
++          availableModelFixture({ model: "gpt-5", reasoningLevels: ["high"] }),
++        ],
++      });
++      const lease = service.stage("economy", policy);
++      lease.activate();
++      change(lease.controller, true);
++      const queued = seedQueuedMessage(h.deps, {
++        threadId: f.thread.id,
++        content: [{ type: "text", text: "queued input", mentions: [] }],
++        model: "gpt-5",
++        reasoningLevel: "high",
++        serviceTier: "fast",
++      });
++      const dispatch = sendQueuedMessage(h.deps, {
++        threadId: f.thread.id,
++        queuedMessageId: queued.id,
++        mode: "auto",
++        claimPolicy: {
++          kind: "automatic",
++          retryingFailure: false,
++          isGroupEligible: createAutomaticQueuedMessageGroupEligibility(
++            h.deps,
++            { now: Date.now(), retryingFailure: false, thread: f.thread },
++          ),
++        },
++      });
++      const sent = await waitForQueuedCommand(
++        h,
++        (item) =>
++          item.command.type === "turn.submit" &&
++          item.command.threadId === f.thread.id,
++      );
++      expect(sent.command).toMatchObject({
++        options: policy.profile,
++        input: [{ text: "queued input" }],
++      });
++      await reportQueuedCommandSuccess(h, sent, { trace: { spans: [] } });
++      await dispatch;
++      change(lease.controller, false);
++      expect(getLastExecutionOptions(h.deps, f.thread.id)).toMatchObject({
++        model: "gpt-5",
++        reasoningLevel: "high",
++      });
++      lease.controller.release();
++    });
++  });
++
++  it("deduplicates the cold native catalog read on the actual target host and respects unavailable cooldown", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!;
++      const lease = service.stage("economy", policy);
++      lease.activate();
++      change(lease.controller, true);
++      const responder = registerProviderHostRpcResponder(h, {
++        hostId: f.host.id,
++        sessionId: f.session.id,
++        modelsByProviderId: { codex: { models: [], selectedOnlyModels: [] } },
++      });
++      await Promise.all([
++        service.prepare(f.thread.id),
++        service.prepare(f.thread.id),
++      ]);
++      await service.prepare(f.thread.id);
++      expect(
++        responder.requests.filter(
++          (r) => r.command.type === "provider.list_models",
++        ),
++      ).toHaveLength(1);
++      expect(service.dispatchWait(f.thread.id)).toBeTruthy();
++      change(lease.controller, false);
++      expect(service.dispatchWait(f.thread.id)).toBeNull();
++      responder.unregister();
++      lease.controller.release();
++    });
++  });
++  it("does not leave a usable unindexed policy after registry persistence fails", async () => {
++    await withTestHarness(async (h) => {
++      const service = executionPolicyService(h.db)!,
++        manifest = join(
++          h.config.dataDir,
++          "execution-policies",
++          "registry.json",
++        );
++      mkdirSync(manifest, { recursive: true });
++      expect(() => service.stage("economy", policy)).toThrow();
++      rmSync(manifest, { recursive: true });
++      const lease = service.stage("economy", policy);
++      expect(existsSync(manifest)).toBe(true);
++      lease.activate();
++      change(lease.controller, true);
++      const restarted = createExecutionPolicyService(h.deps),
++        resumed = restarted.stage("economy", policy);
++      resumed.activate();
++      expect(resumed.controller.status().enabled).toBe(true);
++      resumed.controller.release();
++      lease.controller.release();
++    });
++  });
++  it("discards a failed staged candidate without disabling a live owner, and disables when no replacement survives", async () => {
++    await withTestHarness(async (h) => {
++      const service = executionPolicyService(h.db)!,
++        original = service.stage("economy", policy);
++      original.activate();
++      change(original.controller, true);
++      const failed = service.stage("economy", policy);
++      failed.controller.release();
++      expect(original.controller.status().enabled).toBe(true);
++      const abandoned = service.stage("economy", policy);
++      original.controller.release();
++      expect(abandoned.controller.status().enabled).toBe(true);
++      abandoned.controller.release();
++      const replacement = service.stage("economy", policy);
++      replacement.activate();
++      expect(replacement.controller.status().enabled).toBe(false);
++      expect(replacement.controller.status().generation).toBe(2);
++      replacement.controller.release();
++    });
++  });
++  it("waits for the real deferred provider registry during startup and notifies the installed owner without a reload", async () => {
++    await withTestHarness(async (h) => {
++      const before = h.deps.providerRegistry;
++      const registry = createProviderRegistryService({
++        deferRegistrationsSettled: true,
++      });
++      h.deps.providerRegistry = registry;
++      try {
++        const service = executionPolicyService(h.db)!,
++          lease = service.stage("economy", policy);
++        let notified = 0;
++        lease.controller.subscribe(() => {
++          notified++;
++        });
++        lease.activate();
++        expect(lease.controller.status().available).toBe(false);
++        expect(() => change(lease.controller, true)).toThrow(/not active/);
++        await registerFirstPartyProviders(registry);
++        registry.markRegistrationsSettled();
++        await Promise.resolve();
++        await Promise.resolve();
++        expect(lease.controller.status().available).toBe(true);
++        expect(notified).toBeGreaterThan(0);
++        change(lease.controller, true);
++        expect(lease.controller.status().enabled).toBe(true);
++        lease.controller.release();
++      } finally {
++        h.deps.providerRegistry = before;
++      }
++    });
++  });
++  it("cancels a pending provider registration on unload and never activates a released handle", async () => {
++    await withTestHarness(async (h) => {
++      const before = h.deps.providerRegistry,
++        registry = createProviderRegistryService({
++          deferRegistrationsSettled: true,
++        });
++      h.deps.providerRegistry = registry;
++      try {
++        const service = executionPolicyService(h.db)!,
++          lease = service.stage("economy", policy);
++        lease.activate();
++        lease.controller.release();
++        await registerFirstPartyProviders(registry);
++        registry.markRegistrationsSettled();
++        await Promise.resolve();
++        await Promise.resolve();
++        expect(() =>
++          lease.controller.set({
++            enabled: true,
++            expectedGeneration: 0,
++            requestId: randomUUID(),
++          }),
++        ).toThrow(/not active/);
++        const next = service.stage("economy", policy);
++        next.activate();
++        expect(next.controller.status().enabled).toBe(false);
++        expect(next.controller.status().generation).toBe(0);
++        next.controller.release();
++      } finally {
++        h.deps.providerRegistry = before;
++      }
++    });
++  });
++  it("blocks both native admission and final transport while a selected policy awaits its startup provider", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!,
++        before = h.deps.providerRegistry;
++      await seedModelCatalog(h, {
++        hostId: f.host.id,
++        providerId: "codex",
++        models: [
++          availableModelFixture({ model: "gpt-5", reasoningLevels: ["high"] }),
++          availableModelFixture({
++            model: "gpt-6-luna",
++            reasoningLevels: ["medium"],
++          }),
++        ],
++      });
++      const execution = await buildExecutionOptions(
++        h.deps,
++        { model: "gpt-5", reasoningLevel: "high" },
++        { threadId: f.thread.id },
++      );
++      const command = await buildThreadStartCommand(h.deps, {
++        environment: f.environment,
++        execution,
++        fork: null,
++        permissionEscalation: "ask",
++        input: [{ type: "text", text: "input preserved", mentions: [] }],
++        projectId: f.project.id,
++        providerId: "codex",
++        requestId: encodeClientTurnRequestIdNumber({ value: 8 }),
++        syncGeneratedTitle: false,
++        thread: f.thread,
++      });
++      const original = service.stage("economy", policy);
++      original.activate();
++      change(original.controller, true);
++      service.shutdown();
++      original.controller.release();
++      const duringBoot = createExecutionPolicyService(h.deps, {
++        bootstrapping: true,
++      });
++      expect(duringBoot.dispatchWait(f.thread.id)?.reason).toMatch(
++        /registration/,
++      );
++      expect(() => duringBoot.beforeTransport(command, f.host.id)).toThrow(
++        /registration/,
++      );
++      duringBoot.completeStartup();
++      expect(duringBoot.beforeTransport(command, f.host.id)).toBe(command);
++      const registry = createProviderRegistryService({
++        deferRegistrationsSettled: true,
++      });
++      h.deps.providerRegistry = registry;
++      try {
++        const restarted = createExecutionPolicyService(h.deps),
++          pending = restarted.stage("economy", policy);
++        pending.activate();
++        expect(pending.controller.status().available).toBe(false);
++        expect(restarted.dispatchWait(f.thread.id)?.reason).toMatch(
++          /registration/,
++        );
++        expect(() => restarted.beforeTransport(command, f.host.id)).toThrow(
++          /registration/,
++        );
++        pending.controller.release();
++        registry.markRegistrationsSettled();
++        h.deps.providerRegistry = before;
++        const afterUnload = createExecutionPolicyService(h.deps),
++          disabled = afterUnload.stage("economy", policy);
++        disabled.activate();
++        expect(disabled.controller.status().enabled).toBe(false);
++        expect(disabled.controller.status().generation).toBe(2);
++        disabled.controller.release();
++      } finally {
++        h.deps.providerRegistry = before;
++      }
++    });
++  });
++  it("preserves selected mode and original request provenance through the native server archive and import path", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!;
++      seedThreadRuntimeState(h.deps, {
++        environmentId: f.environment.id,
++        threadId: f.thread.id,
++        providerThreadId: "original-session",
++        model: "gpt-5",
++        reasoningLevel: "high",
++      });
++      const lease = service.stage("economy", policy);
++      lease.activate();
++      change(lease.controller, true);
++      const requestId = encodeClientTurnRequestIdNumber({ value: 9 });
++      service.record(f.thread.id, requestId, requested);
++      service.shutdown();
++      lease.controller.release();
++      const inventory = await listServerOwnedEntries(h.config.dataDir),
++        files = inventory.entries
++          .flatMap((entry) => entry.files)
++          .filter((file) => file.path.startsWith("execution-policies/"));
++      expect(files).toHaveLength(2);
++      const outPath = join(h.config.dataDir, "native-policy.tar.gz"),
++        stagingDir = join(h.config.dataDir, "extracted"),
++        dataDir = join(h.config.dataDir, "restored");
++      await writeServerArchive({
++        outPath,
++        files: files.map((file) => ({
++          sourcePath: file.absolutePath,
++          archivePath: file.path,
++        })),
++        manifest: {
++          createdAt: Date.now(),
++          bbVersion: "0.50.1",
++          protocolVersion: 272,
++          migrationCount: 0,
++          sourceDataDir: "/evaluation",
++          sourceServerHostId: null,
++          serverMoveExperiment: true,
++        },
++      });
++      const manifest = await extractServerArchive({
++        archivePath: outPath,
++        destinationDir: stagingDir,
++      });
++      await installImportedServerFiles({
++        stagingDir,
++        dataDir,
++        manifest,
++        localServerUrl: null,
++      });
++      const restored = createExecutionPolicyService({
++          ...h.deps,
++          config: { ...h.config, dataDir },
++        }),
++        resumed = restored.stage("economy", policy);
++      resumed.activate();
++      expect(resumed.controller.status().enabled).toBe(true);
++      expect(resumed.controller.status().generation).toBe(1);
++      expect(
++        restored.restore(f.thread.id, requestId, {
++          ...policy.profile,
++          permissionMode: "full",
++          source: "native",
++        }),
++      ).toMatchObject({
++        model: "gpt-5",
++        reasoningLevel: "high",
++        permissionMode: "full",
++        source: "native",
++      });
++      resumed.controller.release();
++    });
++  });
++  it.each(["selection", "recovery"])(
++    "preserves immutable source when %s crosses an OFF-to-ON catalog await",
++    async (kind) => {
++      await withTestHarness(async (h) => {
++        const f = seedThreadFixture(h),
++          service = executionPolicyService(h.db)!;
++        await seedModelCatalog(h, {
++          hostId: f.host.id,
++          providerId: "codex",
++          models: [
++            availableModelFixture({
++              model: "gpt-5",
++              reasoningLevels: ["high"],
++            }),
++            availableModelFixture({
++              model: "gpt-5-alt",
++              reasoningLevels: ["high"],
++            }),
++            availableModelFixture({
++              model: "gpt-6-luna",
++              reasoningLevels: ["medium"],
++            }),
++          ],
++        });
++        setThreadExecutionOverride(h.db, {
++          threadId: f.thread.id,
++          modelOverride: "gpt-5",
++          reasoningLevelOverride: "high",
++        });
++        const before = getThreadExecutionOverride(h.db, f.thread.id),
++          lease = service.stage("economy", policy);
++        lease.activate();
++        const responder = registerProviderHostRpcResponder(h, {
++          hostId: f.host.id,
++          sessionId: f.session.id,
++          modelsByProviderId: {
++            codex: {
++              models: [
++                availableModelFixture({
++                  model: "gpt-5",
++                  reasoningLevels: ["high"],
++                }),
++                availableModelFixture({
++                  model: "gpt-5-alt",
++                  reasoningLevels: ["high"],
++                }),
++                availableModelFixture({
++                  model: "gpt-6-luna",
++                  reasoningLevels: ["medium"],
++                }),
++              ],
++              selectedOnlyModels: [],
++            },
++          },
++        });
++        const write =
++          kind === "selection"
++            ? applyThreadExecutionOverride(h.deps, {
++                thread: f.thread,
++                patch: { model: "gpt-5-alt" },
++              })
++            : recoverThreadModelOverride(h.deps, {
++                thread: f.thread,
++                model: "gpt-5-alt",
++                modelSource: "explicit",
++                reasoningLevel: undefined,
++                reasoningLevelSource: undefined,
++              });
++        change(lease.controller, true);
++        if (kind === "selection")
++          await expect(write).rejects.toMatchObject({
++            status: 409,
++            body: { code: "execution_policy_conflict" },
++          });
++        else await expect(write).resolves.toBeUndefined();
++        expect(getThreadExecutionOverride(h.db, f.thread.id)).toEqual(before);
++        responder.unregister();
++        lease.controller.release();
++      });
++    },
++  );
++});
+diff --git a/apps/server/src/services/execution-policies/service.ts b/apps/server/src/services/execution-policies/service.ts
+new file mode 100644
+index 0000000..cfa8b5d
+--- /dev/null
++++ b/apps/server/src/services/execution-policies/service.ts
+@@ -0,0 +1,611 @@
++import { createHash, randomUUID } from "node:crypto";
++import {
++  existsSync,
++  mkdirSync,
++  readFileSync,
++  writeFileSync,
++  renameSync,
++  openSync,
++  fsyncSync,
++  closeSync,
++  unlinkSync,
++} from "node:fs";
++import { join } from "node:path";
++import { and, eq, isNull } from "drizzle-orm";
++import { z } from "zod";
++import {
++  getAppSettings,
++  getEnvironment,
++  getThread,
++  getLastStoredTurnRequestEvent,
++  getThreadExecutionOverride,
++  isThreadQueueAutoSendPaused,
++  rootConnectionOf,
++  threads,
++  type DbQueryConnection,
++} from "@bb/db";
++import type { Thread } from "@bb/domain";
++import type { HostDaemonRpcCommand } from "@bb/host-daemon-contract";
++import type { ExperimentalExecutionPolicyController } from "@get-bb/plugin-sdk";
++import type { WorkSessionDeps } from "../../types.js";
++import { ApiError } from "../../errors.js";
++import {
++  getActiveTurnId,
++  parseStoredTurnRequestEvent,
++} from "../threads/thread-events.js";
++import { getStoredThreadExecutionOptions } from "../threads/thread-execution-plan.js";
++import { loadThreadExecutionDefaults } from "../threads/project-execution-defaults.js";
++import { threadTargetHostId } from "../threads/dispatch-attempt.js";
++import { projectCheckoutPathOnHost } from "../projects/project-workspace.js";
++import { readThreadSessionOptionState } from "../threads/thread-session-options.js";
++import { resolveSystemExecutionOptionsForValidation } from "../system/execution-options.js";
++import {
++  createExecutionPolicyRuntime,
++  ExecutionPolicyConflict,
++  executionProfileSchema,
++  executionPolicySemantics,
++  profileFields,
++  type ExecutionPolicyRow,
++  type ExecutionPolicyRuntime,
++} from "./runtime.js";
++
++const policySchema = z
++  .object({
++    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
++    providerId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
++    profile: executionProfileSchema,
++  })
++  .strict();
++const entrySchema = policySchema.extend({ owner: z.string().min(1).max(200) });
++type Entry = z.infer<typeof entrySchema>;
++interface Registration {
++  entry: Entry;
++  runtime: ExecutionPolicyRuntime;
++  token: symbol | null;
++  activeReleased: boolean;
++  pending: Set<symbol>;
++  listeners: Set<() => void>;
++}
++const registries = new WeakMap<
++  object,
++  ReturnType<typeof createExecutionPolicyService>
++>();
++export function executionPolicyService(db: DbQueryConnection) {
++  return registries.get(rootConnectionOf(db) ?? db);
++}
++export function initializeExecutionPolicies(deps: WorkSessionDeps) {
++  const existing = executionPolicyService(deps.db);
++  if (existing) return existing;
++  const service = createExecutionPolicyService(deps, { bootstrapping: true });
++  registries.set(deps.db, service);
++  return service;
++}
++export function createExecutionPolicyService(
++  deps: WorkSessionDeps,
++  options: { bootstrapping?: boolean } = {},
++) {
++  const directory = join(deps.config.dataDir, "execution-policies"),
++    manifest = join(directory, "registry.json");
++  const registrations = new Map<string, Registration>(),
++    loads = new Map<string, { until: number; promise: Promise<unknown> }>();
++  let registryError: string | null = null,
++    shuttingDown = false,
++    bootstrapping = options.bootstrapping ?? false;
++  function persistEntries(entries: Entry[]) {
++    mkdirSync(directory, { recursive: true, mode: 0o700 });
++    const tmp = manifest + "." + randomUUID() + ".tmp";
++    let fd: number | null = null;
++    try {
++      fd = openSync(tmp, "wx", 0o600);
++      writeFileSync(fd, JSON.stringify(entries));
++      fsyncSync(fd);
++      closeSync(fd);
++      fd = null;
++      renameSync(tmp, manifest);
++      const dir = openSync(directory, "r");
++      try {
++        fsyncSync(dir);
++      } finally {
++        closeSync(dir);
++      }
++    } finally {
++      if (fd !== null) closeSync(fd);
++      if (existsSync(tmp)) unlinkSync(tmp);
++    }
++  }
++  function row(entry: Entry, thread: Thread): ExecutionPolicyRow {
++    const hostId = threadTargetHostId(deps, thread),
++      environment = thread.environmentId
++        ? getEnvironment(deps.db, thread.environmentId)
++        : null;
++    const checkout = hostId
++      ? projectCheckoutPathOnHost(deps, thread.projectId, hostId)
++      : null;
++    const model = hostId
++      ? deps.lifecycleDedupers.providerModelCatalogs.getCachedModel(deps, {
++          hostId,
++          providerId: entry.providerId,
++          model: entry.profile.model,
++          workspacePaths: [environment?.path, checkout].filter(
++            (v): v is string => typeof v === "string",
++          ),
++        })
++      : null;
++    const online = hostId !== null && deps.hub.hasDaemonForHost(hostId);
++    const available =
++      online &&
++      deps.providerRegistry.get(entry.providerId) !== null &&
++      !deps.providerRegistry.disabledProviderIds().has(entry.providerId) &&
++      model !== null &&
++      model.supportedReasoningEfforts.some(
++        (item) => item.reasoningEffort === entry.profile.reasoningLevel,
++      );
++    const last = getStoredThreadExecutionOptions(deps, thread),
++      override = getThreadExecutionOverride(deps.db, thread.id);
++    return {
++      id: thread.id,
++      providerId: thread.providerId,
++      hostId,
++      deleted: thread.deletedAt !== null,
++      archived: thread.archivedAt !== null,
++      paused: isThreadQueueAutoSendPaused(deps.db, thread.id),
++      status: thread.status,
++      activeTurnId: getActiveTurnId(deps, thread.id),
++      lastRequestId: (() => {
++        const stored = getLastStoredTurnRequestEvent(deps.db, thread.id);
++        return stored ? parseStoredTurnRequestEvent(stored).requestId : null;
++      })(),
++      available,
++      unavailableReason: !online
++        ? "Host is unavailable. Settings are preserved."
++        : !available
++          ? "The policy model and reasoning level are not confirmed by the native host catalog."
++          : null,
++      source: {
++        providerId: thread.providerId,
++        allowFastServiceTier: getAppSettings(deps.db).allowFastServiceTier,
++        modelOverride: override?.modelOverride ?? null,
++        reasoningLevelOverride: override?.reasoningLevelOverride ?? null,
++        lastExecution: profileFields(last),
++        defaults: profileFields(loadThreadExecutionDefaults(deps, thread))!,
++      },
++      sessionSnapshot: readThreadSessionOptionState(deps.db, thread.id),
++    };
++  }
++  function add(entry: Entry, isNew = false) {
++    const id = entry.owner + ":" + entry.id,
++      listeners = new Set<() => void>();
++    const registration: Registration = {
++      entry,
++      token: null,
++      activeReleased: false,
++      pending: new Set(),
++      listeners,
++      runtime: createExecutionPolicyRuntime({
++        allowMissing: isNew,
++        statePath: join(
++          directory,
++          createHash("sha256").update(id).digest("hex") + ".json",
++        ),
++        providerId: entry.providerId,
++        profile: entry.profile,
++        changed: () => {
++          for (const listener of listeners) {
++            try {
++              listener();
++            } catch (error) {
++              deps.logger.warn({ error }, "Execution-policy listener failed");
++            }
++          }
++        },
++        adapter: {
++          list: () =>
++            deps.db
++              .select()
++              .from(threads)
++              .where(
++                and(
++                  eq(threads.providerId, entry.providerId),
++                  isNull(threads.deletedAt),
++                ),
++              )
++              .all()
++              .map((t) => row(entry, t)),
++          get: (id) => {
++            const thread = getThread(deps.db, id);
++            return thread ? row(entry, thread) : null;
++          },
++        },
++      }),
++    };
++    if (isNew) registration.runtime.initialize();
++    registrations.set(id, registration);
++    return registration;
++  }
++  try {
++    for (const entry of z
++      .array(entrySchema)
++      .parse(JSON.parse(readFileSync(manifest, "utf8")))) {
++      if (registrations.has(entry.owner + ":" + entry.id))
++        throw Error("Duplicate policy identity");
++      add(entry);
++    }
++  } catch (error) {
++    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
++      registryError =
++        "Could not read the execution-policy registry. Dispatch is blocked until recovery.";
++  }
++  const check = () => {
++    if (registryError) throw Error(registryError);
++  };
++  const forThread = (threadId: string) => {
++    check();
++    const thread = getThread(deps.db, threadId);
++    return thread
++      ? [...registrations.values()].filter(
++          (r) => r.entry.providerId === thread.providerId,
++        )
++      : [];
++  };
++  let refreshQueued = false;
++  const unsubscribeChanges = deps.hub.onChangedMessage((message) => {
++    if (
++      shuttingDown ||
++      refreshQueued ||
++      !(
++        (message.entity === "thread" &&
++          message.changes.includes("status-changed")) ||
++        (message.entity === "host" &&
++          message.changes.some((change) =>
++            [
++              "host-connected",
++              "host-disconnected",
++              "provider-model-catalog-changed",
++            ].includes(change),
++          ))
++      )
++    )
++      return;
++    refreshQueued = true;
++    queueMicrotask(() => {
++      refreshQueued = false;
++      if (shuttingDown) return;
++      for (const r of registrations.values()) {
++        r.runtime.status();
++        for (const listener of r.listeners) {
++          try {
++            listener();
++          } catch (error) {
++            deps.logger.warn({ error }, "Execution-policy listener failed");
++          }
++        }
++      }
++    });
++  });
++  const api = {
++    completeStartup() {
++      bootstrapping = false;
++    },
++    shutdown() {
++      shuttingDown = true;
++      unsubscribeChanges();
++      for (const r of registrations.values()) r.runtime.suspend();
++    },
++    stage(owner: string, raw: unknown) {
++      check();
++      if (shuttingDown) throw Error("The server is shutting down.");
++      const policy = policySchema.parse(raw),
++        entry = entrySchema.parse({ ...policy, owner }),
++        id = owner + ":" + policy.id;
++      if (deps.providerRegistry.disabledProviderIds().has(entry.providerId))
++        throw Error("The execution-policy provider is not available.");
++      const conflict = [...registrations.values()].find(
++        (r) =>
++          r.entry.providerId === entry.providerId &&
++          (r.token !== null || r.pending.size > 0) &&
++          r.entry.owner !== owner,
++      );
++      if (conflict)
++        throw Error(
++          "Another plugin already owns this provider execution policy.",
++        );
++      let registration = registrations.get(id);
++      if (
++        registration &&
++        JSON.stringify(registration.entry) !== JSON.stringify(entry)
++      )
++        throw Error(
++          "The durable policy identity cannot change. Register a new policy ID after releasing the old policy.",
++        );
++      if (!registration) {
++        registration = add(entry, true);
++        try {
++          persistEntries([...registrations.values()].map((r) => r.entry));
++        } catch (error) {
++          registrations.delete(id);
++          throw error;
++        }
++      }
++      const r = registration,
++        token = Symbol(id),
++        listeners = new Set<() => void>();
++      r.pending.add(token);
++      const registrationWait = new AbortController();
++      let released = false,
++        activated = false,
++        bound = false,
++        registrationError: string | null = null;
++      const notify = () => {
++        for (const listener of r.listeners) {
++          try {
++            listener();
++          } catch (error) {
++            deps.logger.warn({ error }, "Execution-policy listener failed");
++          }
++        }
++      };
++      const bind = () => {
++        if (released || shuttingDown) return;
++        try {
++          if (
++            !deps.providerRegistry.get(entry.providerId) ||
++            deps.providerRegistry.disabledProviderIds().has(entry.providerId)
++          )
++            throw Error(
++              "The execution-policy provider is not registered or is disabled.",
++            );
++          const other = [...registrations.values()].find(
++            (other) =>
++              other !== r &&
++              other.entry.providerId === entry.providerId &&
++              other.token !== null,
++          );
++          if (other) throw Error("Another policy owns this provider.");
++          r.runtime.attach();
++          r.pending.delete(token);
++          r.token = token;
++          r.activeReleased = false;
++          bound = true;
++        } catch (error) {
++          registrationError =
++            error instanceof Error
++              ? error.message
++              : "Provider registration is unconfirmed.";
++        }
++        notify();
++      };
++      const assertActive = () => {
++        if (released || !activated || !bound || r.token !== token)
++          throw Error("The execution-policy handle is not active.");
++      };
++      const controller: ExperimentalExecutionPolicyController = {
++        status: () => {
++          if (released) throw Error("The execution-policy handle is released.");
++          const state = r.runtime.status();
++          return bound
++            ? state
++            : {
++                ...state,
++                available: false,
++                error:
++                  state.error ??
++                  registrationError ??
++                  "Waiting for the native provider to finish registration.",
++              };
++        },
++        set: (input) => {
++          assertActive();
++          return r.runtime.set(input);
++        },
++        subscribe: (listener) => {
++          if (released) throw Error("The execution-policy handle is released.");
++          listeners.add(listener);
++          r.listeners.add(listener);
++          return () => {
++            listeners.delete(listener);
++            r.listeners.delete(listener);
++          };
++        },
++        release: () => {
++          if (released) return;
++          released = true;
++          registrationWait.abort();
++          for (const listener of listeners) r.listeners.delete(listener);
++          listeners.clear();
++          r.pending.delete(token);
++          if (r.token === token) r.activeReleased = true;
++          if ((r.activeReleased || r.token === null) && r.pending.size === 0) {
++            r.token = null;
++            if (!shuttingDown) r.runtime.detach();
++          }
++        },
++      };
++      return {
++        controller,
++        activate() {
++          if (released) return;
++          if (shuttingDown) throw Error("The server is shutting down.");
++          activated = true;
++          if (deps.providerRegistry.get(entry.providerId)) bind();
++          else
++            void deps.providerRegistry
++              .whenProviderRegistered(entry.providerId, registrationWait.signal)
++              .then(bind, (error) => {
++                if (!released && !shuttingDown) {
++                  registrationError =
++                    error instanceof Error
++                      ? error.message
++                      : "Provider registration failed.";
++                  notify();
++                }
++              });
++        },
++      };
++    },
++    noteCreation(
++      threadId: string,
++      request: {
++        model?: unknown;
++        reasoningLevel?: unknown;
++        serviceTier?: unknown;
++      },
++    ) {
++      for (const r of forThread(threadId))
++        r.runtime.noteCreation(threadId, request);
++    },
++    describe: () => ({
++      protocol: "bb.execution-policy/v1",
++      semantics: executionPolicySemantics,
++    }),
++    observe(threadId: string) {
++      for (const r of forThread(threadId)) {
++        const thread = getThread(deps.db, threadId);
++        if (thread) r.runtime.capture(row(r.entry, thread));
++      }
++    },
++    guard(threadId: string) {
++      try {
++        for (const r of forThread(threadId)) r.runtime.guard(threadId);
++      } catch (error) {
++        if (error instanceof ExecutionPolicyConflict)
++          throw new ApiError(409, error.code, error.message);
++        throw error;
++      }
++    },
++    suppressSticky(threadId: string) {
++      return forThread(threadId).some((r) =>
++        r.runtime.suppressSticky(threadId),
++      );
++    },
++    record(
++      threadId: string,
++      requestId: string,
++      execution: Record<string, unknown>,
++    ) {
++      for (const r of forThread(threadId))
++        r.runtime.record(threadId, requestId, execution);
++    },
++    restore<T extends Record<string, unknown>>(
++      threadId: string,
++      requestId: string,
++      execution: T,
++    ): T {
++      for (const r of forThread(threadId))
++        execution = r.runtime.restore(threadId, requestId, execution);
++      return execution;
++    },
++    beforeTransport(
++      command: HostDaemonRpcCommand,
++      hostId: string,
++    ): HostDaemonRpcCommand {
++      if (command.type !== "thread.start" && command.type !== "turn.submit")
++        return command;
++      let effective = command;
++      const policies = forThread(command.threadId);
++      if (
++        policies.some(
++          (r) =>
++            (bootstrapping || r.pending.size > 0) &&
++            r.runtime.selected() &&
++            !r.runtime.enabled(),
++        )
++      )
++        throw new ExecutionPolicyConflict(
++          "Waiting for native execution-policy registration.",
++        );
++      for (const r of [
++        ...policies.filter((r) => !r.runtime.enabled()),
++        ...policies.filter((r) => r.runtime.enabled()),
++      ])
++        effective = r.runtime.beforeTransport(effective, hostId);
++      return effective;
++    },
++    transportResult(
++      command: HostDaemonRpcCommand,
++      response: { ok: boolean; errorCode?: string } | null,
++      error?: unknown,
++    ) {
++      try {
++        if (command.type !== "thread.start" && command.type !== "turn.submit")
++          return;
++        for (const r of forThread(command.threadId))
++          r.runtime.transportResult(command, response, error);
++      } catch (error) {
++        deps.logger.warn(
++          { error },
++          "Execution-policy receipt is unconfirmed. The transport outcome is preserved.",
++        );
++      }
++    },
++    dispatchWait(threadId: string) {
++      for (const r of forThread(threadId)) {
++        if (
++          (bootstrapping || r.pending.size > 0) &&
++          r.runtime.selected() &&
++          !r.runtime.enabled()
++        )
++          return {
++            owner: r.entry.owner,
++            reason: "Waiting for native execution-policy registration.",
++          };
++        const reason = r.runtime.dispatchWait(threadId);
++        if (reason) return { owner: r.entry.owner, reason };
++      }
++      return null;
++    },
++    async prepare(threadId: string) {
++      for (const r of forThread(threadId)) {
++        if (!r.runtime.enabled() || !r.runtime.dispatchWait(threadId)) continue;
++        const thread = getThread(deps.db, threadId);
++        if (!thread) continue;
++        const hostId = threadTargetHostId(deps, thread);
++        if (!hostId || !deps.hub.hasDaemonForHost(hostId)) continue;
++        const key = JSON.stringify([
++          r.entry.providerId,
++          r.entry.profile,
++          hostId,
++          thread.projectId,
++          thread.environmentId,
++        ]);
++        let load = loads.get(key);
++        if (!load || load.until <= Date.now()) {
++          const next = {
++            until: Infinity,
++            promise: Promise.resolve<unknown>(null),
++          };
++          next.promise = resolveSystemExecutionOptionsForValidation(
++            deps,
++            {
++              hostId,
++              providerId: r.entry.providerId,
++              projectId: thread.projectId,
++              ...(thread.environmentId
++                ? { environmentId: thread.environmentId }
++                : {}),
++            },
++            r.entry.profile.model,
++          )
++            .catch(() => null)
++            .finally(() => {
++              next.until = Date.now() + 30000;
++            });
++          load = next;
++          loads.set(key, next);
++        }
++        let timer: ReturnType<typeof setTimeout> | undefined;
++        try {
++          await Promise.race([
++            load.promise,
++            new Promise<void>((resolve) => {
++              timer = setTimeout(resolve, 12000);
++              timer.unref();
++            }),
++          ]);
++        } finally {
++          clearTimeout(timer);
++        }
++      }
++    },
++  };
++  return api;
++}
+diff --git a/apps/server/src/services/hosts/online-rpc.ts b/apps/server/src/services/hosts/online-rpc.ts
+index 5c3db94..7eb7612 100644
+--- a/apps/server/src/services/hosts/online-rpc.ts
++++ b/apps/server/src/services/hosts/online-rpc.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import { hostCommandMayWake } from "./wake-policy.js";
+ import { isHostCleanupAllowed } from "./cleanup-context.js";
+ import { assertMachineLifecycleAdmission } from "../machines/lifecycle.js";
+@@ -264,7 +265,8 @@ async function callHostOnlineRpcWithRetry(
+   },
+ ): Promise<HostDaemonRpcResultForCommand> {
+   const retryArgs = (): CallHostOnlineRpcArgs<HostDaemonRpcCommand> =>
+-    options.retryCommand !== undefined && args.command.type === "plugin.host.call"
++    options.retryCommand !== undefined &&
++    args.command.type === "plugin.host.call"
+       ? { ...args, command: options.retryCommand(args.command) }
+       : args;
+   const timeoutRetryDeadline =
+@@ -393,11 +395,28 @@ function requestHostOnlineRpcResponse(
+       message: {
+         type: "host-rpc.request",
+         requestId: randomUUID(),
+-        command: args.command,
++        command:
++          executionPolicyService(deps.db)?.beforeTransport(
++            args.command,
++            args.hostId,
++          ) ?? args.command,
+       },
+       ...(args.signal ? { signal: args.signal } : {}),
+       timeoutMs: args.timeoutMs,
+     }),
++  ).then(
++    (response) => {
++      executionPolicyService(deps.db)?.transportResult(args.command, response);
++      return response;
++    },
++    (error) => {
++      executionPolicyService(deps.db)?.transportResult(
++        args.command,
++        null,
++        error,
++      );
++      throw error;
++    },
+   );
+ }
+ 
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 73b64d5..2f6f4a0 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import {
+   rpcInvalidationTags,
+   type ContractTagDeclarations,
+@@ -1386,7 +1387,26 @@ export function createPluginApi(options: {
+     register: aiServiceRegistrations.register,
+   };
+ 
++  const nativePolicies = executionPolicyService(db);
++  const stagedPolicies: Array<
++    ReturnType<NonNullable<typeof nativePolicies>["stage"]>
++  > = [];
+   const api: BbPluginApi = {
++    ...(nativePolicies
++      ? {
++          experimental_executionPolicies: {
++            describe: nativePolicies.describe,
++            register: (policy) => {
++              assertLive();
++              const staged = nativePolicies.stage(pluginId, policy);
++              stagedPolicies.push(staged);
++              disposeHooks.push(() => staged.controller.release());
++              if (activated) staged.activate();
++              return staged.controller;
++            },
++          },
++        }
++      : {}),
+     internal_DO_NOT_USE_recordPluginUse() {
+       assertLive();
+       options.recordPluginUse();
+@@ -1484,6 +1504,7 @@ export function createPluginApi(options: {
+       );
+       providerRegistrations.flush();
+       aiServiceRegistrations.flush();
++      for (const staged of stagedPolicies) staged.activate();
+       activated = true;
+       const cliWarning = cliRecord.registration
+         ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
+diff --git a/apps/server/src/services/providers/provider-registry.ts b/apps/server/src/services/providers/provider-registry.ts
+index 586cf06..c4054e8 100644
+--- a/apps/server/src/services/providers/provider-registry.ts
++++ b/apps/server/src/services/providers/provider-registry.ts
+@@ -87,7 +87,10 @@ export interface ProviderRegistryService {
+       installRank?: ProviderInstallRank;
+     },
+   ): { dispose(): void };
+-  whenProviderRegistered(providerId: string): Promise<void>;
++  whenProviderRegistered(
++    providerId: string,
++    signal?: AbortSignal,
++  ): Promise<void>;
+   whenRegistrationsSettled(): Promise<void>;
+   markRegistrationsSettled(): void;
+ }
+@@ -178,19 +181,33 @@ export function createProviderRegistryService(
+ 
+   async function waitUntilSettledOrTimeout(
+     readiness: Promise<void>,
++    signal?: AbortSignal,
+   ): Promise<void> {
+     if (settle === null) {
+       return;
+     }
+     let timer: ReturnType<typeof setTimeout> | undefined;
+-    await Promise.race([
+-      readiness,
+-      settled,
+-      new Promise<void>((resolve) => {
+-        timer = setTimeout(resolve, REGISTRATIONS_SETTLED_TIMEOUT_MS);
+-      }),
+-    ]);
+-    clearTimeout(timer);
++    let aborted: (() => void) | undefined;
++    const cancellation = signal
++      ? new Promise<void>((resolve) => {
++          aborted = () => resolve();
++          signal.addEventListener("abort", aborted, { once: true });
++          if (signal.aborted) resolve();
++        })
++      : new Promise<void>(() => {});
++    try {
++      await Promise.race([
++        readiness,
++        settled,
++        cancellation,
++        new Promise<void>((resolve) => {
++          timer = setTimeout(resolve, REGISTRATIONS_SETTLED_TIMEOUT_MS);
++        }),
++      ]);
++    } finally {
++      clearTimeout(timer);
++      if (aborted) signal?.removeEventListener("abort", aborted);
++    }
+   }
+ 
+   const service: ProviderRegistryService = {
+@@ -365,7 +382,7 @@ export function createProviderRegistryService(
+       };
+     },
+ 
+-    async whenProviderRegistered(providerId) {
++    async whenProviderRegistered(providerId, signal) {
+       if (pluginRegistrations.has(providerId) || settle === null) {
+         return;
+       }
+@@ -377,7 +394,7 @@ export function createProviderRegistryService(
+       waiters.add(release);
+       providerRegistrationWaiters.set(providerId, waiters);
+       try {
+-        await waitUntilSettledOrTimeout(registered);
++        await waitUntilSettledOrTimeout(registered, signal);
+       } finally {
+         const currentWaiters = providerRegistrationWaiters.get(providerId);
+         currentWaiters?.delete(release);
+diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
+index 2baab15..9d46e77 100644
+--- a/apps/server/src/services/threads/dispatch-attempt.ts
++++ b/apps/server/src/services/threads/dispatch-attempt.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import {
+   requestQueuedMachineReadiness,
+   requestQueuedMessageDispatch,
+@@ -638,6 +639,21 @@ async function runDispatchAttempt(
+       return;
+     }
+ 
++    await executionPolicyService(deps.db)?.prepare(thread.id);
++    const executionPolicyWait = executionPolicyService(deps.db)?.dispatchWait(
++      thread.id,
++    );
++    if (executionPolicyWait) {
++      continued.outcome = waitOn(
++        {
++          kind: "plugin",
++          pluginId: executionPolicyWait.owner,
++          reason: executionPolicyWait.reason,
++        },
++        Date.now() + 30000,
++      );
++      return;
++    }
+     if (firstDispatch) {
+       admitted.value = await admitPendingThread(deps, {
+         author,
+diff --git a/apps/server/src/services/threads/thread-create-helpers.ts b/apps/server/src/services/threads/thread-create-helpers.ts
+index 61f3303..7cbac4c 100644
+--- a/apps/server/src/services/threads/thread-create-helpers.ts
++++ b/apps/server/src/services/threads/thread-create-helpers.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import {
+   createThread,
+   InvalidLifecycleOwnerError,
+@@ -125,6 +126,7 @@ export function createThreadRecord(
+       status: "pending",
+       startupContext: args.startupContext,
+     });
++    executionPolicyService(deps.db)?.noteCreation(thread.id, args.request);
+     emitPluginThreadCreated(thread);
+     return thread;
+   } catch (error) {
+diff --git a/apps/server/src/services/threads/thread-events.ts b/apps/server/src/services/threads/thread-events.ts
+index d78069e..89ea9bb 100644
+--- a/apps/server/src/services/threads/thread-events.ts
++++ b/apps/server/src/services/threads/thread-events.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import {
+   appendStoredThreadEventsInTransaction,
+   createEventId,
+@@ -343,6 +344,13 @@ function appendThreadEventsInTransactionWithAttention(
+   db: DbTransaction,
+   args: readonly AppendThreadEventArgs[],
+ ): AppendThreadEventsTransactionResult {
++  for (const event of args)
++    if (event.type === "client/turn/requested")
++      executionPolicyService(db)?.record(
++        event.threadId,
++        event.data.requestId,
++        event.data.execution,
++      );
+   assertStoredTurnStartedForEvents(db, args);
+   const sequences = appendStoredThreadEventsInTransaction(db, args);
+   const readStateUpdates = args
+@@ -964,5 +972,13 @@ export function getLastExecutionOptions(
+ ): RecordedThreadExecutionOptions | null {
+   const row = getLastStoredTurnRequestEvent(deps.db, threadId);
+ 
+-  return row ? parseStoredTurnRequestEvent(row).execution : null;
++  if (!row) return null;
++  const request = parseStoredTurnRequestEvent(row);
++  return (
++    executionPolicyService(deps.db)?.restore(
++      threadId,
++      request.requestId,
++      request.execution,
++    ) ?? request.execution
++  );
+ }
+diff --git a/apps/server/src/services/threads/thread-execution-override.ts b/apps/server/src/services/threads/thread-execution-override.ts
+index 4383c28..83622f2 100644
+--- a/apps/server/src/services/threads/thread-execution-override.ts
++++ b/apps/server/src/services/threads/thread-execution-override.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import {
+   getThreadExecutionOverride,
+   setThreadExecutionOverride,
+@@ -120,6 +121,7 @@ export async function applyThreadExecutionOverride(
+   args: ApplyThreadExecutionOverrideArgs,
+ ): Promise<void> {
+   const { thread, patch } = args;
++  executionPolicyService(deps.db)?.guard(thread.id);
+ 
+   const models = await loadThreadProviderModels(
+     deps,
+@@ -139,6 +141,7 @@ export async function applyThreadExecutionOverride(
+     fallbackModel: resolveThreadFallbackModel(deps, thread),
+   });
+ 
++  executionPolicyService(deps.db)?.guard(thread.id);
+   setThreadExecutionOverride(deps.db, {
+     threadId: thread.id,
+     modelOverride: next.modelOverride,
+@@ -150,6 +153,7 @@ export async function recoverThreadModelOverride(
+   deps: LoggedWorkSessionDeps,
+   args: RecoverThreadModelOverrideArgs,
+ ): Promise<void> {
++  if (executionPolicyService(deps.db)?.suppressSticky(args.thread.id)) return;
+   const existing = getThreadExecutionOverride(deps.db, args.thread.id);
+   const patch: ThreadExecutionOverridePatch = {};
+   if (
+@@ -170,10 +174,20 @@ export async function recoverThreadModelOverride(
+   }
+   if (patch.model === undefined && patch.reasoningLevel === undefined) return;
+ 
+-  await applyThreadExecutionOverride(deps, {
+-    thread: args.thread,
+-    patch,
+-  });
++  try {
++    await applyThreadExecutionOverride(deps, {
++      thread: args.thread,
++      patch,
++    });
++  } catch (error) {
++    if (
++      error instanceof ApiError &&
++      error.body.code === "execution_policy_conflict" &&
++      executionPolicyService(deps.db)?.suppressSticky(args.thread.id)
++    )
++      return;
++    throw error;
++  }
+ }
+ 
+ async function loadThreadProviderModels(
+diff --git a/apps/server/src/services/threads/thread-execution-plan.ts b/apps/server/src/services/threads/thread-execution-plan.ts
+index 3acac18..c671fe8 100644
+--- a/apps/server/src/services/threads/thread-execution-plan.ts
++++ b/apps/server/src/services/threads/thread-execution-plan.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import { getAppSettings, getQueuedThreadStartMessage, getThread } from "@bb/db";
+ import {
+   DEFAULT_SERVICE_TIER,
+@@ -77,7 +78,7 @@ interface ExistingThreadExecutionPlan {
+   resolvedExecution: ResolvedThreadExecutionOptions;
+ }
+ 
+-function getStoredThreadExecutionOptions(
++export function getStoredThreadExecutionOptions(
+   deps: Pick<AppDeps, "db">,
+   thread: Thread,
+ ): RecordedThreadExecutionOptions | null {
+@@ -313,6 +314,7 @@ export async function resolveExistingThreadExecutionPlan(
+   args: ResolveExistingThreadExecutionPlanArgs,
+ ): Promise<ExistingThreadExecutionPlan> {
+   const thread = requireThread(deps, args.threadId);
++  executionPolicyService(deps.db)?.observe(thread.id);
+   const lastExecution = getStoredThreadExecutionOptions(deps, thread);
+   const defaults = loadThreadExecutionDefaults(deps, thread);
+   const model =
+diff --git a/apps/server/src/services/threads/thread-session-options.ts b/apps/server/src/services/threads/thread-session-options.ts
+index af2089b..dd07b5f 100644
+--- a/apps/server/src/services/threads/thread-session-options.ts
++++ b/apps/server/src/services/threads/thread-session-options.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "../execution-policies/service.js";
+ import { listLatestThreadStateEventRowsByThreadIds } from "@bb/db";
+ import type { DbConnection } from "@bb/db";
+ import {
+@@ -52,7 +53,7 @@ function readLatestThreadState(
+   return null;
+ }
+ 
+-function readThreadSessionOptionState(
++export function readThreadSessionOptionState(
+   db: DbConnection,
+   threadId: string,
+ ): ThreadSessionOptionState {
+@@ -143,6 +144,7 @@ export function applyThreadSessionOptionPatch(
+   deps: Pick<AppDeps, "db" | "hub">,
+   args: { thread: Thread; patch: SessionOptionSelectionPatch },
+ ): void {
++  executionPolicyService(deps.db)?.guard(args.thread.id);
+   const state = readThreadSessionOptionState(deps.db, args.thread.id);
+   const result = applySessionOptionSelectionPatch({
+     options: state.options,
+diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
+index e9c4f5c..5bd4d7f 100644
+--- a/apps/server/src/start-server.ts
++++ b/apps/server/src/start-server.ts
+@@ -1,3 +1,4 @@
++import { executionPolicyService } from "./services/execution-policies/service.js";
+ import { createDesktopAppUpdateService } from "./services/system/desktop-app-update.js";
+ import {
+   AUTO_UPDATE_CHECK_MS,
+@@ -108,6 +109,7 @@ export interface StartServerPluginsArgs {
+   logger: Pick<ServerLogger, "error" | "warn">;
+   pluginService: Pick<PluginService, "start" | "startPeriodicUpdateChecks">;
+   providerRegistry: Pick<ProviderRegistryService, "markRegistrationsSettled">;
++  executionPolicies?: { completeStartup(): void };
+ }
+ 
+ export function startServerPlugins(
+@@ -122,6 +124,7 @@ export function startServerPlugins(
+     })
+     .finally(() => {
+       args.providerRegistry.markRegistrationsSettled();
++      args.executionPolicies?.completeStartup();
+       args.pluginService.startPeriodicUpdateChecks();
+     });
+ }
+@@ -535,6 +538,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+         logger,
+         pluginService,
+         providerRegistry,
++        executionPolicies: executionPolicyService(db),
+       }).finally(() => {
+         void serverMove.handlePluginsStarted();
+       });
+@@ -572,6 +576,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+         clearInterval(sweepInterval);
+       }
+       pluginCatalogService.stopPeriodicRefresh();
++      executionPolicyService(db)?.shutdown();
+       await pluginService.stopPeriodicUpdateChecks();
+       if (pendingServerMove === null) {
+         await pluginService.stop().catch((error: unknown) => {
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index 7746895..d047316 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -5008,3 +5008,36 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
+ replacement. Settle the shared process-local instance lifecycle across SDK
+ bundle versions and whether `bundledNpmCli` belongs on the public surface before
+ removing the prefix.
++
++## Native effective execution policies
++
++`bb.experimental_executionPolicies` is a provider-scoped, plugin-attributed native service.
++`register` accepts only model, reasoning level and service tier. Core shares this
++implementation for event provenance, option mutation guards, dispatch admission,
++last-execution restoration and the final synchronous host send. It never grants
++a plugin permission to alter the provider, input, source, history or permissions.
++Registration is staged until atomic plugin activation. A replacement lease takes
++over from the same owner without letting the old lease disable it. Release stops
++new overlays, while durable original-execution readers remain in core. A process
++restart resumes an enabled policy only when its owner registers again; absent
++owners leave source restoration active and effective overlays disabled.
++
++Protocol `bb.execution-policy/v1` describes the required semantic identifiers.
++All public status and refusal messages use English. The Plugin Guide lists the
++SDK symbols under Effective execution policies. Every native send uses the same
++final boundary; message.dispatch remains proceed/wait/reject only.
++
++Before stabilization, audit multi-host provider continuation, crash/restart and
++uninstall restoration, journal corruption, immutable null/Fast profiles, native
++catalog cancellation and cooldown, concurrent plugin reloads, provenance retention,
++and target-host changes after preparation. No daemon wire fields are added.
++
++Policy activation waits on the native provider registry when factories load
++in a different startup order. Pending controllers remain unavailable until
++the provider registers; unknown providers never gain execution authority.
++The wait is bounded and aborted on release. Completing registration notifies
++the owner immediately so clients do not need a reload or execution polling.
++
++The server-owned `execution-policies/` tree participates in native server
++archives and imports, so moving a server retains selection and request restore
++provenance even if the originating plugin is later removed.
+diff --git a/packages/agent-runtime/src/runtime.execution-policy.test.ts b/packages/agent-runtime/src/runtime.execution-policy.test.ts
+new file mode 100644
+index 0000000..3472bfb
+--- /dev/null
++++ b/packages/agent-runtime/src/runtime.execution-policy.test.ts
+@@ -0,0 +1,90 @@
++import { describe, it, expect } from "vitest";
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { dirname, join } from "node:path";
++import type { ThreadEvent } from "@bb/domain";
++import {
++  createScriptedEchoRuntime,
++  createScriptedEchoRequestRecord,
++  fullRuntimeOptions,
++  waitForThreadTurnStarted,
++  waitForThreadTurnCompleted,
++} from "./test/runtime-test-harness.js";
++import { promptTextInput } from "./test/prompt-input.js";
++describe("effective profile at native turn boundaries", () => {
++  it("keeps a live steer on its existing profile and uses the new profile on the following turn", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "bb-policy-steer-")),
++      record = createScriptedEchoRequestRecord(),
++      events: ThreadEvent[] = [];
++    const runtime = createScriptedEchoRuntime({
++      runtime: {
++        workspacePath: directory,
++        env: record.env,
++        onEvent: (event) => events.push(event),
++      },
++    });
++    const active = {
++        ...fullRuntimeOptions,
++        model: "active-model",
++        reasoningLevel: "high" as const,
++      },
++      next = {
++        ...fullRuntimeOptions,
++        model: "next-model",
++        reasoningLevel: "low" as const,
++      };
++    try {
++      await runtime.startThread({
++        environmentId: "env",
++        threadId: "thread",
++        projectId: "project",
++        providerId: "fake",
++        options: active,
++      });
++      await runtime.runTurn({
++        threadId: "thread",
++        clientRequestId: "creq_222222223a",
++        input: [promptTextInput({ text: "delay:500 active" })],
++        options: active,
++      });
++      const { turnId } = await waitForThreadTurnStarted({
++        events,
++        providerId: "fake",
++        runtime,
++        threadId: "thread",
++      });
++      await runtime.steerTurn({
++        threadId: "thread",
++        expectedTurnId: turnId,
++        clientRequestId: "creq_222222223b",
++        input: [promptTextInput({ text: "steer" })],
++        options: next,
++      });
++      expect(record.last("turn/steer")?.params).toMatchObject({
++        options: {
++          model: "active-model",
++          reasoningLevel: "high",
++          permissionMode: "full",
++        },
++      });
++      await waitForThreadTurnCompleted({
++        events,
++        providerId: "fake",
++        threadId: "thread",
++      });
++      await runtime.runTurn({
++        threadId: "thread",
++        clientRequestId: "creq_222222223c",
++        input: [promptTextInput({ text: "next" })],
++        options: next,
++      });
++      expect(record.last("turn/start")?.params).toMatchObject({
++        options: { model: "next-model", reasoningLevel: "low" },
++      });
++    } finally {
++      await runtime.shutdown();
++      rmSync(directory, { recursive: true, force: true });
++      rmSync(dirname(record.path), { recursive: true, force: true });
++    }
++  });
++});
+diff --git a/packages/agent-runtime/src/runtime.ts b/packages/agent-runtime/src/runtime.ts
+index 82e1b36..8feb6a6 100644
+--- a/packages/agent-runtime/src/runtime.ts
++++ b/packages/agent-runtime/src/runtime.ts
+@@ -2160,12 +2160,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+         work: async () => {
+           const pid = threadIdentityRegistry.resolveProviderForThread(threadId);
+           const currentProc = requireProviderProcessForThread(threadId);
++
++          const activeConfig = threadRuntimeConfigs.get(threadId);
++          const steerOptions = activeConfig
++            ? {
++                ...execOpts,
++                model: activeConfig.options.model,
++                reasoningLevel: activeConfig.options.reasoningLevel,
++                serviceTier: activeConfig.options.serviceTier,
++              }
++            : execOpts;
+           assertProviderSupportsExecutionOptions({
+             adapter: currentProc.adapter,
+-            options: execOpts,
++            options: steerOptions,
+             providerId: pid,
+           });
+-
+           const activeTurnId = turnState.getActiveTurnId(threadId);
+           if (activeTurnId !== expectedTurnId) {
+             options.onStderr?.(
+@@ -2179,7 +2188,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+ 
+           await restartThreadBridgeIfRecommended({
+             threadId,
+-            options: execOpts,
++            options: steerOptions,
+             instructions,
+           });
+           const proc = requireProviderProcessForThread(threadId);
+@@ -2201,7 +2210,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+           );
+           recordThreadExecutionOptions({
+             threadId,
+-            options: execOpts,
++            options: steerOptions,
+           });
+ 
+           const providerThreadId = requireProviderThreadId(threadId);
+@@ -2214,7 +2223,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+             clientRequestId,
+             options: toProviderExecutionContext({
+               envVars: resolvedEnvironment.envVars,
+-              execOpts,
++              execOpts: steerOptions,
+               instructions,
+             }),
+           };
+@@ -2241,7 +2250,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+               ...currentConfig,
+               contributedEnv: resolvedContributedEnv,
+               envVars: resolvedEnvironment.envVars,
+-              options: execOpts,
++              options: steerOptions,
+             });
+             if (environmentChanged) {
+               emitResolvedProviderEnvironment({
+diff --git a/packages/db/src/index.ts b/packages/db/src/index.ts
+index 66621ad..a3e46e5 100644
+--- a/packages/db/src/index.ts
++++ b/packages/db/src/index.ts
+@@ -1,4 +1,8 @@
+-export { afterCommit, createConnection } from "./connection.js";
++export {
++  afterCommit,
++  createConnection,
++  rootConnectionOf,
++} from "./connection.js";
+ export type {
+   DbConnection,
+   DbQueryConnection,
+diff --git a/packages/host-daemon-contract/src/protocol.ts b/packages/host-daemon-contract/src/protocol.ts
+index 699d6f6..947d5fc 100644
+--- a/packages/host-daemon-contract/src/protocol.ts
++++ b/packages/host-daemon-contract/src/protocol.ts
+@@ -1,4 +1,4 @@
+-export const HOST_DAEMON_PROTOCOL_VERSION = 271 as const;
++export const HOST_DAEMON_PROTOCOL_VERSION = 272 as const;
+ 
+ export const HOST_DAEMON_DESKTOP_BROKER_PROOF_PROTOCOL_VERSION = 248 as const;
+ 
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index e030001..e5d2547 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -16,6 +16,7 @@ import type {
+ } from "../app-contract.js";
+ 
+ type ExpectedBbPluginApiKey =
++  | "experimental_executionPolicies"
+   | "internal_DO_NOT_USE_recordPluginUse"
+   | "agents"
+   | "background"
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 6b7d459..ab2343b 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -1,3 +1,4 @@
++import type { ExperimentalExecutionPolicies } from "./execution-policy.js";
+ import type {
+   EnvironmentRemoval,
+   Environment,
+@@ -2178,6 +2179,8 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+  * against.
+  */
+ export interface BbPluginApi {
++  /** Native effective execution policies. Absent on older or unsupported server builds. Experimental: see docs/api_to_audit.md. */
++  readonly experimental_executionPolicies?: ExperimentalExecutionPolicies;
+   /** Internal: counts one meaningful use of a first-party plugin's UI. */
+   internal_DO_NOT_USE_recordPluginUse(): void;
+   /** The plugin's own id (namespaces storage, routes, commands). */
+diff --git a/packages/plugin-sdk/src/execution-policy.ts b/packages/plugin-sdk/src/execution-policy.ts
+new file mode 100644
+index 0000000..e915ed3
+--- /dev/null
++++ b/packages/plugin-sdk/src/execution-policy.ts
+@@ -0,0 +1,46 @@
++/** A server-owned effective profile. It never grants provider, permission, input or history authority. */
++export interface ExperimentalExecutionProfile {
++  model: string;
++  reasoningLevel: string;
++  serviceTier: string;
++}
++export interface ExperimentalExecutionPolicyIssue {
++  threadId: string;
++  hostId?: string | null;
++  reason: string;
++}
++export interface ExperimentalExecutionPolicyState {
++  available: boolean;
++  phase: "off" | "enabling" | "on" | "disabling";
++  generation: number;
++  enabled: boolean;
++  profile: ExperimentalExecutionProfile;
++  eligible: number;
++  ready: number;
++  pending: ExperimentalExecutionPolicyIssue[];
++  unavailable: ExperimentalExecutionPolicyIssue[];
++  conflicts: ExperimentalExecutionPolicyIssue[];
++  error: string | null;
++}
++export interface ExperimentalExecutionPolicySet {
++  enabled: boolean;
++  expectedGeneration: number;
++  requestId: string;
++}
++export interface ExperimentalExecutionPolicyController {
++  status(): ExperimentalExecutionPolicyState;
++  set(input: ExperimentalExecutionPolicySet): ExperimentalExecutionPolicyState;
++  subscribe(changed: () => void): () => void;
++  /** Deactivate new overlays. Durable original-execution readers outlive this handle. */
++  release(): void;
++}
++/** Experimental server-owned effective-execution integration. See docs/api_to_audit.md. */
++export interface ExperimentalExecutionPolicies {
++  describe(): { protocol: string; semantics: readonly string[] };
++  /** Register a provider-scoped profile, attributed to the calling plugin. One live owner per provider. */
++  register(policy: {
++    id: string;
++    providerId: string;
++    profile: ExperimentalExecutionProfile;
++  }): ExperimentalExecutionPolicyController;
++}
+diff --git a/packages/plugin-sdk/src/index.ts b/packages/plugin-sdk/src/index.ts
+index 36d1837..0353c28 100644
+--- a/packages/plugin-sdk/src/index.ts
++++ b/packages/plugin-sdk/src/index.ts
+@@ -46,3 +46,4 @@ export {
+  * half of it. Experimental: see docs/api_to_audit.md.
+  */
+ export { sliceUtf16Head as experimental_sliceUtf16Head } from "@bb/text-utils";
++export type * from "./execution-policy.js";
+diff --git a/packages/server-archive/src/server-owned-paths.ts b/packages/server-archive/src/server-owned-paths.ts
+index 044587a..aee0610 100644
+--- a/packages/server-archive/src/server-owned-paths.ts
++++ b/packages/server-archive/src/server-owned-paths.ts
+@@ -14,6 +14,7 @@ export const SERVER_OWNED_TOP_LEVEL_DIRECTORIES: readonly string[] = [
+   "attachments",
+   "skills",
+   "theme",
++  "execution-policies",
+ ];
+ export const PLUGINS_DIR_NAME = "plugins";
+ 
+diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
+index 9e9ff26..047a066 100644
+--- a/plugins/plugin-api-docs/src/surfaces.ts
++++ b/plugins/plugin-api-docs/src/surfaces.ts
+@@ -1303,6 +1303,27 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "Workflows",
+         ],
+       },
++      {
++        id: "execution-policies",
++        title: "Effective execution policies",
++        summary:
++          "Apply a server-owned profile at the final native host boundary.",
++        bullets: [
++          "Scope a model, reasoning level and service tier to one provider",
++          "Preserve requested settings, permissions, history and immutable original profiles",
++          "Use generation CAS, request IDs, native host catalogs and durable restore after unload",
++          "Finish active turns before applying a new profile",
++          "Wait for native provider registration at startup and cancel pending handles on unload",
++        ],
++        apiSymbols: [
++          "ExperimentalExecutionPolicies",
++          "ExperimentalExecutionPolicyController",
++          "ExperimentalExecutionPolicyState",
++          "ExperimentalExecutionPolicySet",
++          "ExperimentalExecutionProfile",
++        ],
++        experimental: true,
++      },
+       {
+         id: "dispatch-hook",
+         tagline: "Decide whether a message may go",

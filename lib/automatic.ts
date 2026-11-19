@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
-import {confirmedQuota, type QuotaSnapshot} from './quota-view';
-export type {QuotaSnapshot} from './quota-view';
+import {confirmedQuota, type QuotaSnapshot} from './quota-snapshot';
+export type {QuotaSnapshot} from './quota-snapshot';
 export interface ModeState {available: boolean; enabled: boolean; generation: number; error: string | null}
 export interface ModeOperation {enabled: boolean; expectedGeneration: number; requestId: string}
 export interface AutomaticRecord {

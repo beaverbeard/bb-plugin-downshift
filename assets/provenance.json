@@ -8,5 +8,26 @@
   "originalSha256": "15d2ecc4e824b3c40e5b9f4be4eaa7467d722e008b23813b4f091c67428ac246",
   "normalizedSha256": "75d84fc3f941448c25a111b84e18450fe9312c471393d7d5d8214cf49247e8a8",
   "license": "MIT",
-  "normalization": "Scale 256 coordinates to a 24 viewBox without changing the path"
+  "normalization": "Scale 256 coordinates to a 24 viewBox without changing the path",
+  "controlIcons": [
+    {
+      "family": "Phosphor",
+      "weight": "fill",
+      "version": "2.1.1",
+      "icon": "rabbit",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/fill/rabbit-fill.svg",
+      "license": "MIT",
+      "originalSha256": "d8b14c2ad2b482e5627568ea7841cec21bc0608b0804e537031fd2a8bdf067f5",
+      "normalizedSha256": "e6ee39d9aff989623e80c0747cf42a0e9461277c11fb12c0f45963bfed98c3ff"
+    },
+    {
+      "family": "Material Design Icons",
+      "icon": "tortoise",
+      "source": "https://raw.githubusercontent.com/Templarian/MaterialDesign/2424e748e0cc63ab7b9c095a099b9fe239b737c0/svg/tortoise.svg",
+      "license": "Apache-2.0",
+      "reason": "Phosphor has no turtle; user explicitly selected rabbit/turtle control symbols. Navigation branding remains Phosphor Fill.",
+      "originalSha256": "0a16f8ae349efceebc329cbe7058f10bd5a21eabecc23dd479a85486a9af02b6",
+      "normalizedSha256": "9c79bb07024b03d243bdf53cdc2712438b508543ee4157c5050990cdba7fe171"
+    }
+  ]
 }

@@ -1,14 +1,14 @@
 {
   "name": "bb-plugin-economy",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "type": "module",
   "engines": {
-    "bb": ">=0.49",
+    "bb": ">=0.50.1",
     "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
     "name": "Economy [Experimental]",
-    "description": "Keep Codex work on a smaller model when quota runs low. Requires the native execution-policy capability; stock BB is unsupported.",
+    "description": "Use a smaller Codex profile when quota runs low. Requires the included companion native BB integration; stock BB is unsupported.",
     "branding": {
       "icon": "./assets/battery.svg",
       "experimental_icons": {

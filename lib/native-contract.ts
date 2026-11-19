@@ -1,7 +1,7 @@
 import type {EconomyState} from './state';
 
-/** Proposed upstream contract, NOT an API present in stock BB 0.49.0/SDK 0.6.132.
- * See compatibility/UPSTREAM-DEPENDENCY.md. A local type is not a compatibility shim.
+/** Companion native contract, NOT an API present in stock BB.
+ * See compatibility/NATIVE-INTEGRATION.md and the included exact source patch.
  */
 export const nativeProtocol = 'bb.execution-policy/v1';
 export const requiredSemantics = [

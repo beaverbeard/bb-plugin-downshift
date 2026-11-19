@@ -1,31 +1,39 @@
-## Current availability
+## Companion native build required
 
-This is an experimental local candidate. Its required native execution-policy
-capability is absent from stock BB 0.49.0 and the inspected upstream main.
-Publication is blocked until that capability and its restoration tests ship.
-A stock installation shows a disabled control with this requirement.
+Economy is experimental and requires the included companion BB source
+integration. It has not shipped upstream. Stock BB shows a disabled control;
+the UI alone cannot provide a global execution overlay. The package contains
+an exact source patch, checksum, build guide and compatibility check.
 
-## With a compatible native build
+## Global Codex profile
 
-A global Economy button selects Luna, medium reasoning and Fast off for Codex
-at the next safe turn boundary. Active work finishes naturally. Other providers
-keep their settings. Turning Economy off restores each thread's original
-execution semantics, including inherited settings.
+On the companion build, one Economy button selects Luna, medium reasoning and
+Fast off across Codex threads. Active work keeps its current profile; the next
+native turn uses the new one. Other providers keep their settings. Turning
+Economy off restores original execution semantics, including inherited values.
+The native journal and restore readers survive removal of the plugin.
 
-An optional automatic rule enables Economy once when any confirmed active
-Codex quota window has 5% or less remaining. Shared quota can trigger it when no
-model-specific reading is available. The current SDK quota adapter reports
-shared account windows only. Manual OFF takes priority until the low window
-resets. There is no automatic OFF, and stale readings cannot switch the mode.
+## Quota and automatic activation
 
-A compact bubble beside the button shows confirmed remaining Codex quota:
-green at 50–100%, yellow at 25–49%, red at 0–24%, or an em dash when unknown.
-The button reports unconfirmed cached state and transition warnings. A removable
-warm tint follows the selected BB theme. Shared subscription limits still apply.
+Automatic activation is on by default. Economy enables once when any confirmed
+active Codex quota window has 5% or less remaining. The current adapter reads
+shared Codex account quota on BB's primary host; it does not infer separate
+model limits or combine accounts. Manual OFF takes priority until the window
+resets, including when quota was temporarily unknown. There is no automatic OFF,
+and stale readings cannot activate the mode.
+
+An icon switch slides between original profiles (rabbit) and Economy (turtle).
+Click, tap, swipe or use the keyboard. OFF follows BB’s theme; ON is orange.
+The removable warm tint follows that same theme. Warnings and unconfirmed cached
+state are explicit. All plugin text is English. Shared subscription limits still
+apply. Quota is read internally for automatic activation; no percentage widget
+is included.
 
 ## Requirements
 
-Requires BB with the native bb.execution-policy/v1 capability, a Codex provider,
-and a Codex subscription with Luna available on the target host. No separate
-paid API service is used. This package never patches or restarts BB. Core must
-retain execution provenance and restoration readers after plugin removal.
+Requires the companion native bb.execution-policy/v1 build on the server and
+execution hosts, a Codex provider, and Luna/medium available in each target
+host's native catalog. Usage comes from BB's native subscription integration;
+no separate paid API service is used. This package never patches an installed
+runtime or restarts a service. Follow the native integration guide before
+installing it for execution control.

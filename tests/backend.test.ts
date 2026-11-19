@@ -50,7 +50,7 @@ test('registration is provider-scoped; native subscription and handle are releas
 test('invalid native status is unavailable and a failed subscription releases its handle', async () => {
   let release = 0;
   const native = {describe: () => ({protocol: nativeProtocol, semantics: requiredSemantics}), register: () => ({status: () => ({}), set: () => ({}), subscribe: () => {throw Error('failed');}, release: () => release++})};
-  const h = host(native); await plugin(h.bb); assert.equal(release, 1); assert.equal(h.handlers.economy_state!().available, false); assert.deepEqual(h.services, ['quota']);
+  const h = host(native); await plugin(h.bb); assert.equal(release, 1); assert.equal(h.handlers.economy_state!().available, false); assert.deepEqual(h.services, ['quota']); assert.match(h.handlers.economy_state!().error, /Native Economy registration failed: failed/);
 });
 test('package uses public SDK imports only', async () => {
   const result = await experimental_scanPublicSdkOnly(process.cwd(), {allow: [/^react$/, /^react-dom$/]});
