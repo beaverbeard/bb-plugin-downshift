@@ -1,0 +1,67 @@
+/* The control owns its hit area even inside BB’s pointer-events:none header row. */
+.bb-economy-host{position:relative;pointer-events:auto;flex:0 0 auto;min-width:0;z-index:90;-webkit-app-region:no-drag}
+.bb-economy-host[data-docked=false]{position:fixed;top:max(8px,env(safe-area-inset-top));right:48px}
+.bb-economy{pointer-events:auto;position:relative;z-index:90;font:13px/1.4 var(--font-sans,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif);color:var(--foreground);color-scheme:inherit;max-width:210px;-webkit-app-region:no-drag}
+.bb-economy *{box-sizing:border-box}
+.bb-economy .bb-economy-pill{display:flex;align-items:stretch;background:var(--background);border:1px solid color-mix(in srgb,var(--foreground) 18%,transparent);border-radius:12px;box-shadow:0 2px 8px #00000010;overflow:hidden}
+.bb-economy button{font:inherit;color:inherit;border:0;background:transparent;cursor:pointer;min-height:32px;padding:6px 10px;display:flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;touch-action:manipulation}
+.bb-economy button:focus-visible{outline:2px solid var(--foreground);outline-offset:-3px}
+.bb-economy button:disabled{cursor:default;opacity:.65}
+.bb-economy .bb-economy-info{width:30px;padding:4px;border-left:1px solid color-mix(in srgb,var(--foreground) 12%,transparent)}
+.bb-economy[data-warm] .bb-economy-pill{background:var(--color-orange-300);color:var(--color-orange-950);border-color:var(--color-orange-600)}
+.dark .bb-economy[data-warm] .bb-economy-pill{background:var(--color-orange-400);color:var(--color-orange-950);border-color:var(--color-orange-300)}
+.bb-economy[data-warning] .bb-economy-info{box-shadow:inset 0 -3px 0 var(--warning)}
+.bb-economy .bb-economy-dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.bb-economy .bb-economy-details{position:fixed;top:max(56px,calc(env(safe-area-inset-top) + 48px));right:max(12px,env(safe-area-inset-right));width:330px;max-width:calc(100vw - 24px);max-height:min(65dvh,520px);overflow:auto;overscroll-behavior:contain;padding:16px;background:var(--background);color:var(--foreground);border:1px solid color-mix(in srgb,var(--foreground) 20%,transparent);border-radius:14px;box-shadow:0 10px 36px #00000024;white-space:normal;overflow-wrap:anywhere}
+.bb-economy .bb-economy-details p{margin:9px 0 0}
+.bb-economy .bb-economy-details [role=alert]{font-weight:550}
+.bb-economy .bb-economy-note{font-size:12px;opacity:.75}
+@media(max-width:767px){.bb-economy{font-size:12px;max-width:170px}.bb-economy button{min-height:44px;padding:6px 8px}.bb-economy .bb-economy-info{width:44px;min-width:44px}.bb-economy .bb-economy-switch{min-width:0}.bb-economy .bb-economy-switch span:first-of-type{overflow:hidden;text-overflow:ellipsis}}
+@media(pointer:coarse){.bb-economy button{min-height:44px}.bb-economy .bb-economy-info{width:44px;min-width:44px}}
+
+/* A removable app-wide semantic-token layer.
+   BB supplies the orange-50…950 semantic palette. Canvas/ink, syntax, ANSI,
+   destructive/success and theme settings remain owned by BB. */
+:root[data-bb-economy]{
+ --bb-economy-orange:var(--color-orange-500);
+ --background:color-mix(in oklab,var(--bb-economy-orange) 8%,var(--canvas));
+ --card:color-mix(in oklab,var(--bb-economy-orange) 5%,var(--canvas));
+ --popover:color-mix(in oklab,var(--bb-economy-orange) 4%,var(--canvas));
+ --primary:var(--color-orange-700);--primary-foreground:var(--color-orange-50);
+ --secondary:color-mix(in oklab,var(--bb-economy-orange) 16%,var(--canvas));
+ --accent:color-mix(in oklab,var(--bb-economy-orange) 22%,var(--canvas));
+ --ring:var(--primary);
+ --border:color-mix(in oklab,var(--bb-economy-orange) 34%,var(--canvas));
+ --border-hairline:var(--border);
+ --border-seam:color-mix(in oklab,var(--bb-economy-orange) 26%,var(--canvas));
+ --border-seam-vertical:var(--border-seam);
+ --input:color-mix(in oklab,var(--bb-economy-orange) 44%,var(--canvas));
+ --state-hover:color-mix(in oklab,var(--bb-economy-orange) 16%,transparent);
+ --state-active:color-mix(in oklab,var(--bb-economy-orange) 26%,transparent);
+ --sidebar:color-mix(in oklab,var(--bb-economy-orange) 24%,var(--canvas));
+ --sidebar-accent:color-mix(in oklab,var(--bb-economy-orange) 40%,var(--canvas));
+ --sidebar-border:var(--border);--sidebar-ring:var(--primary);
+ --surface-recessed:color-mix(in oklab,var(--bb-economy-orange) 10%,transparent);
+ --surface-recessed-solid:color-mix(in oklab,var(--bb-economy-orange) 14%,var(--canvas));
+ --surface-recessed-soft-solid:color-mix(in oklab,var(--bb-economy-orange) 10%,var(--canvas));
+ --surface-raised:color-mix(in oklab,var(--bb-economy-orange) 7%,transparent);
+ --surface-raised-solid:var(--card);
+ --surface-scrim:color-mix(in oklab,var(--bb-economy-orange) 24%,var(--canvas));
+ --surface-selected:color-mix(in oklab,var(--bb-economy-orange) 22%,transparent);
+ --surface-selected-border:color-mix(in oklab,var(--bb-economy-orange) 55%,transparent);
+ --pill-surface:linear-gradient(var(--secondary),var(--secondary));
+ --pill-surface-selected:linear-gradient(var(--accent),var(--accent));
+ --pill-surface-selected-border:var(--border);
+}
+:root.dark[data-bb-economy]{--primary:var(--color-orange-400);--primary-foreground:var(--color-orange-950)}
+
+.bb-economy{display:flex;align-items:center;gap:6px;max-width:230px}
+.bb-economy .bb-economy-pill{flex:0 1 auto;min-width:0}
+.bb-economy .bb-economy-quota{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-width:42px;height:28px;padding:0 8px;border:1px solid color-mix(in srgb,currentColor 24%,transparent);border-radius:999px;background:var(--background);font-weight:600;font-variant-numeric:tabular-nums;line-height:1;white-space:nowrap;color:var(--muted-foreground)}
+.bb-economy .bb-economy-quota[data-tone=green]{color:var(--color-green-700)}
+.bb-economy .bb-economy-quota[data-tone=yellow]{color:var(--color-yellow-800)}
+.bb-economy .bb-economy-quota[data-tone=red]{color:var(--color-red-700)}
+.dark .bb-economy .bb-economy-quota[data-tone=green]{color:var(--color-green-300)}
+.dark .bb-economy .bb-economy-quota[data-tone=yellow]{color:var(--color-yellow-300)}
+.dark .bb-economy .bb-economy-quota[data-tone=red]{color:var(--color-red-300)}
+@media(pointer:coarse){.bb-economy .bb-economy-quota{height:32px}}

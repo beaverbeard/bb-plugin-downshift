@@ -1,0 +1,12 @@
+{
+  "family": "Phosphor",
+  "weight": "fill",
+  "version": "2.1.1",
+  "icon": "battery-high",
+  "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/fill/battery-high-fill.svg",
+  "commit": "2b75f3ad12b420c9504ef05df8d2564a28f8500e",
+  "originalSha256": "15d2ecc4e824b3c40e5b9f4be4eaa7467d722e008b23813b4f091c67428ac246",
+  "normalizedSha256": "75d84fc3f941448c25a111b84e18450fe9312c471393d7d5d8214cf49247e8a8",
+  "license": "MIT",
+  "normalization": "Scale 256 coordinates to a 24 viewBox without changing the path"
+}
