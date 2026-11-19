@@ -7,7 +7,7 @@ export const nativeProtocol = 'bb.execution-policy/v1';
 export const requiredSemantics = [
   'final-host-boundary', 'explicit-and-queued', 'preserve-source-and-null',
   'durable-request-provenance', 'immutable-cycle-snapshots', 'cas-and-request-dedup',
-  'safe-native-boundaries', 'native-host-catalog', 'restore-after-unload', 'catalog-profile-validation', 'native-host-handshake',
+  'safe-native-boundaries', 'native-host-catalog', 'restore-after-unload', 'catalog-profile-validation', 'native-host-handshake', 'consistent-durable-registry',
 ] as const;
 export interface NativeController {
   status(): EconomyState;

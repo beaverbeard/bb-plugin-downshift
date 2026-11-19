@@ -73,6 +73,8 @@ hosts must use the compatible native build, including host protocol 273.
 Manifest engine ranges express SDK/build compatibility only. They do not imply
 the capability exists in stock BB. Runtime detection requires `bb.execution-policy/v1`
 and every specified execution, catalog-validation and restoration semantic.
+It also requires `consistent-durable-registry`; companion builds without the
+registry/journal recovery check are refused, even if their protocol matches.
 There is no polling-based execution rewrite or mass thread-option mutation.
 
 ## Build and inspect

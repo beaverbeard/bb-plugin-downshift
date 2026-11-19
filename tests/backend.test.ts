@@ -27,7 +27,7 @@ function nativeFixture(){
  return {native,declarations,get releases(){return releases;},get mutations(){return mutations;},get unsubscribed(){return unsubscribed;},changed:()=>changed()};
 }
 test('stock and incomplete capability cannot register or mutate',async()=>{
- for(const cap of [undefined,{}, {describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics.filter(s=>s!=='catalog-profile-validation')}),register:()=>{throw Error('must not register');}}]){
+ for(const cap of [undefined,{}, ...['catalog-profile-validation','consistent-durable-registry'].map(missing=>({describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics.filter(s=>s!==missing)}),register:()=>{throw Error('must not register');}}))]){
   const h=host(cap);await plugin(h.bb);assert.equal(h.handlers.economy_state!().available,false);assert.match(h.handlers.economy_state!().error,/Stock BB/);
   await assert.rejects(h.handlers.economy_set!(operation()),/native/);
  }

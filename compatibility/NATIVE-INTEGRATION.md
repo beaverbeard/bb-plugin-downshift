@@ -19,6 +19,8 @@ validate reasoning and service tiers. A model without reasoning choices accepts
 only its known catalog default; no unsupported reasoning argument is sent.
 The same native catalog normalization applies when restoring a profile. Unknown
 discovery remains unavailable.
+Economy also requires the `consistent-durable-registry` semantic. An older
+companion that lacks this recovery check is not compatible with this release.
 
 ## Build from the exact source
 
@@ -117,6 +119,13 @@ or replace the companion core with an older binary after using the feature.
 Native server archives and imports preserve the core journal and its request
 restore provenance. Native thread/host events update status without polling for
 execution changes. A corrupt or missing existing journal blocks affected dispatch
-rather than inferring OFF. Recovery requires inspection of that journal and its backups.
+rather than inferring OFF. A missing registry with retained journal files, or a
+registry whose entries do not exactly match the journal inventory, blocks policy
+registration, dispatch and provenance reads until operator recovery. Startup only
+treats an absent or empty policy directory as a first installation; it does not
+recreate a missing registry from guessed identities or reset surviving journals.
+Preserve the directory and recover the matching registry and journals from a
+verified backup before restarting. Recovery requires inspection of the complete
+policy inventory and its backups.
 
 The included helper has no reverse-runtime-patch or journal-deletion command.

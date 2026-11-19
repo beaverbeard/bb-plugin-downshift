@@ -394,10 +394,10 @@ index 0000000..5f47bbf
 +});
 diff --git a/apps/server/src/services/execution-policies/runtime.ts b/apps/server/src/services/execution-policies/runtime.ts
 new file mode 100644
-index 0000000..29ba284
+index 0000000..9d6d3be
 --- /dev/null
 +++ b/apps/server/src/services/execution-policies/runtime.ts
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,667 @@
 +import { createHash, randomUUID } from "node:crypto";
 +import {
 +  closeSync,
@@ -432,6 +432,7 @@ index 0000000..29ba284
 +  "restore-after-unload",
 +  "catalog-profile-validation",
 +  "native-host-handshake",
++  "consistent-durable-registry",
 +] as const;
 +export const executionProfileSchema = z
 +  .object({
@@ -1066,10 +1067,10 @@ index 0000000..29ba284
 +>;
 diff --git a/apps/server/src/services/execution-policies/service.test.ts b/apps/server/src/services/execution-policies/service.test.ts
 new file mode 100644
-index 0000000..8da0518
+index 0000000..b480ccd
 --- /dev/null
 +++ b/apps/server/src/services/execution-policies/service.test.ts
-@@ -0,0 +1,948 @@
+@@ -0,0 +1,1128 @@
 +import { describe, it, expect } from "vitest";
 +import { createProviderRegistryService } from "../providers/provider-registry.js";
 +import { registerFirstPartyProviders } from "../../../test/helpers/provider-registry.js";
@@ -1088,6 +1089,7 @@ index 0000000..8da0518
 +  existsSync,
 +  readFileSync,
 +  readdirSync,
++  writeFileSync,
 +} from "node:fs";
 +import { join } from "node:path";
 +import {
@@ -1676,6 +1678,185 @@ index 0000000..8da0518
 +      lease.controller.release();
 +    });
 +  });
++  it.each(["absent", "empty"])(
++    "allows first installation with an %s policy directory without writing during startup",
++    async (kind) => {
++      await withTestHarness(async (h) => {
++        const f = seedThreadFixture(h),
++          directory = join(h.config.dataDir, "execution-policies");
++        expect(existsSync(directory)).toBe(false);
++        if (kind === "empty") mkdirSync(directory);
++        const fresh = createExecutionPolicyService(h.deps, {
++          bootstrapping: true,
++        });
++        try {
++          expect(fresh.dispatchWait(f.thread.id)).toBeNull();
++          expect(existsSync(directory)).toBe(kind === "empty");
++          if (kind === "empty") expect(readdirSync(directory)).toEqual([]);
++          const lease = fresh.stage("economy", policy);
++          lease.activate();
++          expect(lease.controller.status()).toMatchObject({
++            available: true,
++            enabled: false,
++            generation: 0,
++          });
++          expect(readdirSync(directory)).toHaveLength(2);
++          lease.controller.release();
++        } finally {
++          fresh.shutdown();
++        }
++      });
++    },
++  );
++  it.each(["missing", "empty", "partial"])(
++    "blocks a %s registry with retained ON journals and preserves provenance after explicit registry recovery",
++    async (kind) => {
++      await withTestHarness(async (h) => {
++        const f = seedThreadFixture(h),
++          service = executionPolicyService(h.db)!,
++          directory = join(h.config.dataDir, "execution-policies"),
++          manifest = join(directory, "registry.json"),
++          baseline = {
++            model: "gpt-5",
++            reasoningLevel: "high",
++            serviceTier: "default",
++          };
++        seedThreadRuntimeState(h.deps, {
++          environmentId: f.environment.id,
++          providerThreadId: "original-session",
++          threadId: f.thread.id,
++          model: baseline.model,
++          reasoningLevel: baseline.reasoningLevel,
++          serviceTier: baseline.serviceTier,
++        });
++        await seedModelCatalog(h, {
++          hostId: f.host.id,
++          providerId: "codex",
++          models: [
++            availableModelFixture({
++              model: "gpt-5",
++              reasoningLevels: ["high"],
++            }),
++            availableModelFixture({
++              model: "gpt-6-luna",
++              reasoningLevels: ["medium"],
++            }),
++          ],
++        });
++        const command = await buildThreadStartCommand(h.deps, {
++          environment: f.environment,
++          execution: requested,
++          fork: null,
++          permissionEscalation: "ask",
++          input: [{ type: "text", text: "preserved input", mentions: [] }],
++          projectId: f.project.id,
++          providerId: "codex",
++          requestId: encodeClientTurnRequestIdNumber({ value: 701 }),
++          syncGeneratedTitle: false,
++          thread: f.thread,
++        });
++        const original = structuredClone(command),
++          old = service.stage("economy", { ...policy, id: "previous-profile" });
++        old.activate();
++        change(old.controller, true);
++        const former = service.beforeTransport(command, f.host.id);
++        if (former.type !== "thread.start") throw Error("Unexpected command");
++        service.transportResult(former, { ok: true });
++        change(old.controller, false);
++        old.controller.release();
++        const current = service.stage("economy", policy);
++        current.activate();
++        change(current.controller, true);
++        const next = {
++          ...command,
++          requestId: encodeClientTurnRequestIdNumber({ value: 702 }),
++        };
++        const effective = service.beforeTransport(next, f.host.id);
++        if (effective.type !== "thread.start")
++          throw Error("Unexpected command");
++        service.transportResult(effective, { ok: true });
++        expect(effective).toMatchObject({ options: policy.profile });
++        expect(command).toEqual(original);
++        service.shutdown();
++        current.controller.release();
++        const savedRegistry = readFileSync(manifest),
++          journals = readdirSync(directory).filter(
++            (name) => name !== "registry.json",
++          ),
++          savedJournals = journals.map((name) =>
++            readFileSync(join(directory, name)),
++          );
++        expect(journals).toHaveLength(2);
++        if (kind === "missing") rmSync(manifest);
++        else if (kind === "empty") writeFileSync(manifest, "[]");
++        else
++          writeFileSync(
++            manifest,
++            JSON.stringify([{ ...policy, owner: "economy" }]),
++          );
++        const blocked = createExecutionPolicyService(h.deps, {
++          bootstrapping: true,
++        });
++        try {
++          expect(() => blocked.beforeTransport(next, f.host.id)).toThrow(
++            /registry/,
++          );
++          expect(() => blocked.dispatchWait(f.thread.id)).toThrow(/registry/);
++          expect(() =>
++            blocked.restore(f.thread.id, former.requestId, former.options),
++          ).toThrow(/registry/);
++          expect(() => blocked.stage("economy", policy)).toThrow(/registry/);
++          blocked.completeStartup();
++          expect(() => blocked.beforeTransport(next, f.host.id)).toThrow(
++            /registry/,
++          );
++        } finally {
++          blocked.shutdown();
++        }
++        expect(
++          journals.map((name) => readFileSync(join(directory, name))),
++        ).toEqual(savedJournals);
++        writeFileSync(manifest, savedRegistry);
++        const recovered = createExecutionPolicyService(h.deps, {
++          bootstrapping: true,
++        });
++        try {
++          expect(() => recovered.beforeTransport(next, f.host.id)).toThrow(
++            /registration/,
++          );
++          const resumed = recovered.stage("economy", policy);
++          resumed.activate();
++          expect(resumed.controller.status()).toMatchObject({
++            enabled: true,
++            generation: 1,
++          });
++          expect(recovered.beforeTransport(next, f.host.id)).toMatchObject({
++            options: policy.profile,
++          });
++          expect(
++            recovered.restore(f.thread.id, former.requestId, former.options),
++          ).toEqual({ ...command.options, ...baseline });
++          expect(
++            recovered.restore(
++              f.thread.id,
++              effective.requestId,
++              effective.options,
++            ),
++          ).toEqual({ ...command.options, ...baseline });
++          change(resumed.controller, false);
++          expect(recovered.beforeTransport(effective, f.host.id)).toEqual({
++            ...effective,
++            options: { ...command.options, ...baseline },
++          });
++          expect(resumed.controller.status().generation).toBe(2);
++          resumed.controller.release();
++          expect(command).toEqual(original);
++        } finally {
++          recovered.shutdown();
++        }
++      });
++    },
++  );
 +  it("does not leave a usable unindexed policy after registry persistence fails", async () => {
 +    await withTestHarness(async (h) => {
 +      const service = executionPolicyService(h.db)!,
@@ -2020,15 +2201,16 @@ index 0000000..8da0518
 +});
 diff --git a/apps/server/src/services/execution-policies/service.ts b/apps/server/src/services/execution-policies/service.ts
 new file mode 100644
-index 0000000..c6666a3
+index 0000000..6a8b9fc
 --- /dev/null
 +++ b/apps/server/src/services/execution-policies/service.ts
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,655 @@
 +import { createHash, randomUUID } from "node:crypto";
 +import {
 +  existsSync,
 +  mkdirSync,
 +  readFileSync,
++  readdirSync,
 +  writeFileSync,
 +  renameSync,
 +  openSync,
@@ -2084,6 +2266,10 @@ index 0000000..c6666a3
 +  .strict();
 +const entrySchema = policySchema.extend({ owner: z.string().min(1).max(200) });
 +type Entry = z.infer<typeof entrySchema>;
++const journalName = (entry: Entry) =>
++  createHash("sha256")
++    .update(entry.owner + ":" + entry.id)
++    .digest("hex") + ".json";
 +interface Registration {
 +  entry: Entry;
 +  runtime: ExecutionPolicyRuntime;
@@ -2220,10 +2406,7 @@ index 0000000..c6666a3
 +      listeners,
 +      runtime: createExecutionPolicyRuntime({
 +        allowMissing: isNew,
-+        statePath: join(
-+          directory,
-+          createHash("sha256").update(id).digest("hex") + ".json",
-+        ),
++        statePath: join(directory, journalName(entry)),
 +        providerId: entry.providerId,
 +        profile: entry.profile,
 +        changed: () => {
@@ -2272,17 +2455,36 @@ index 0000000..c6666a3
 +    return registration;
 +  }
 +  try {
-+    for (const entry of z
-+      .array(entrySchema)
-+      .parse(JSON.parse(readFileSync(manifest, "utf8")))) {
-+      if (registrations.has(entry.owner + ":" + entry.id))
-+        throw Error("Duplicate policy identity");
-+      add(entry);
++    let inventory: string[];
++    try {
++      inventory = readdirSync(directory);
++    } catch (error) {
++      if (
++        !(error instanceof Error && "code" in error && error.code === "ENOENT")
++      )
++        throw error;
++      inventory = [];
 +    }
-+  } catch (error) {
-+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
-+      registryError =
-+        "Could not read the execution-policy registry. Dispatch is blocked until recovery.";
++    if (inventory.length > 0) {
++      const entries = z
++          .array(entrySchema)
++          .parse(JSON.parse(readFileSync(manifest, "utf8"))),
++        expected = new Set(["registry.json"]);
++      for (const entry of entries) {
++        const name = journalName(entry);
++        if (expected.has(name)) throw Error("Duplicate policy identity");
++        expected.add(name);
++      }
++      if (
++        inventory.length !== expected.size ||
++        inventory.some((name) => !expected.has(name))
++      )
++        throw Error("Policy registry and journal inventory do not match");
++      for (const entry of entries) add(entry);
++    }
++  } catch {
++    registryError =
++      "Could not read a consistent execution-policy registry. Dispatch is blocked until recovery.";
 +  }
 +  const check = () => {
 +    if (registryError) throw Error(registryError);
@@ -3472,10 +3674,10 @@ index f150bd3..668c7ce 100644
          activeThreads:
            daemon === "running" ? [{ threadId: fixture.threadId }] : [],
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 7746895..f334253 100644
+index 7746895..4eefb8c 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -5008,3 +5008,44 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
+@@ -5008,3 +5008,49 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
  replacement. Settle the shared process-local instance lifecycle across SDK
  bundle versions and whether `bundledNpmCli` belongs on the public surface before
  removing the prefix.
@@ -3500,6 +3702,11 @@ index 7746895..f334253 100644
 +Final transport omits reasoning that the target model does not support, using
 +the same native catalog rule for effective and restored execution. Raw original
 +profiles and provider-specific options remain unchanged.
++`consistent-durable-registry` confirms that startup validates the complete policy
++registry against its journal inventory before loading any registration. Missing,
++empty or partial registries with surviving journals block registration, dispatch
++and provenance reads until operator recovery. An absent or empty policy directory
++remains a supported first installation and is not written during startup.
 +All public status and refusal messages use English. The Plugin Guide lists the
 +SDK symbols under Effective execution policies. Every native send uses the same
 +final boundary; message.dispatch remains proceed/wait/reject only.
@@ -3812,10 +4019,10 @@ index 6b7d459..ab2343b 100644
    /** The plugin's own id (namespaces storage, routes, commands). */
 diff --git a/packages/plugin-sdk/src/execution-policy.ts b/packages/plugin-sdk/src/execution-policy.ts
 new file mode 100644
-index 0000000..e915ed3
+index 0000000..f48a731
 --- /dev/null
 +++ b/packages/plugin-sdk/src/execution-policy.ts
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,47 @@
 +/** A server-owned effective profile. It never grants provider, permission, input or history authority. */
 +export interface ExperimentalExecutionProfile {
 +  model: string;
@@ -3854,6 +4061,7 @@ index 0000000..e915ed3
 +}
 +/** Experimental server-owned effective-execution integration. See docs/api_to_audit.md. */
 +export interface ExperimentalExecutionPolicies {
++  /** consistent-durable-registry requires startup inventory validation and blocks dispatch and provenance reads on registry loss. */
 +  describe(): { protocol: string; semantics: readonly string[] };
 +  /** Register a provider-scoped profile, attributed to the calling plugin. One live owner per provider. */
 +  register(policy: {
@@ -3884,10 +4092,10 @@ index 044587a..aee0610 100644
  export const PLUGINS_DIR_NAME = "plugins";
  
 diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
-index 9e9ff26..047a066 100644
+index 9e9ff26..4a1ee5e 100644
 --- a/plugins/plugin-api-docs/src/surfaces.ts
 +++ b/plugins/plugin-api-docs/src/surfaces.ts
-@@ -1303,6 +1303,27 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -1303,6 +1303,28 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "Workflows",
          ],
        },
@@ -3902,6 +4110,7 @@ index 9e9ff26..047a066 100644
 +          "Use generation CAS, request IDs, native host catalogs and durable restore after unload",
 +          "Finish active turns before applying a new profile",
 +          "Wait for native provider registration at startup and cancel pending handles on unload",
++          "Block dispatch and provenance reads when the durable registry and journal inventory disagree",
 +        ],
 +        apiSymbols: [
 +          "ExperimentalExecutionPolicies",
