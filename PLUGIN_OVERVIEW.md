@@ -5,35 +5,29 @@ integration. It has not shipped upstream. Stock BB shows a disabled control;
 the UI alone cannot provide a global execution overlay. The package contains
 an exact source patch, checksum, build guide and compatibility check.
 
-## Global Codex profile
+## Your models
 
-On the companion build, one Economy button selects Luna, medium reasoning and
-Fast off across Codex threads. Active work keeps its current profile; the next
-native turn uses the new one. Other providers keep their settings. Turning
-Economy off restores original execution semantics, including inherited values.
-The native journal and restore readers survive removal of the plugin.
+Setup asks **“What is your main model?”** using the live BB catalog. Choose your
+provider and a smaller Economy model from that same provider. There is no
+preselected main model. Available providers with confirmed catalogs can be used;
+unknown reasoning discovery is unavailable. Catalog discovery uses the primary
+machine. Each execution host separately validates the selected profile.
 
-## Quota and automatic activation
+The rabbit/turtle switch supports click, tap, swipe and keyboard controls.
+OFF follows BB’s theme; ON is orange. Active work finishes naturally. Later
+native turns use Economy; turning it off restores each thread’s original model,
+reasoning and inherited settings. Other providers keep their settings. Native
+restore readers survive plugin removal.
 
-Automatic activation is on by default. Economy enables once when any confirmed
-active Codex quota window has 5% or less remaining. The current adapter reads
-shared Codex account quota on BB's primary host; it does not infer separate
-model limits or combine accounts. Manual OFF takes priority until the window
-resets, including when quota was temporarily unknown. There is no automatic OFF,
-and stale readings cannot activate the mode.
+## Optional automatic activation
 
-An icon switch slides between original profiles (rabbit) and Economy (turtle).
-Click, tap, swipe or use the keyboard. OFF follows BB’s theme; ON is orange.
-The removable warm tint follows that same theme. Warnings and unconfirmed cached
-state are explicit. All plugin text is English. Shared subscription limits still
-apply. Quota is read internally for automatic activation; no percentage widget
-is included.
+For Codex, setup offers automatic activation at 5% or less remaining in any confirmed
+active shared account window on BB’s primary host. No separate model quota is
+inferred and accounts are not combined. Other providers currently use manual
+switching. Manual OFF takes priority until the window resets, including when
+quota was temporarily unknown. Stale readings cannot activate the mode, and
+there is no automatic OFF. Shared subscription limits still apply.
 
-## Requirements
-
-Requires the companion native bb.execution-policy/v1 build on the server and
-execution hosts, a Codex provider, and Luna/medium available in each target
-host's native catalog. Usage comes from BB's native subscription integration;
-no separate paid API service is used. This package never patches an installed
-runtime or restarts a service. Follow the native integration guide before
-installing it for execution control.
+All plugin text is English. No quota percentage widget is included. The plugin
+uses BB’s native integration, without a separate paid API service. It never
+patches an installed runtime or restarts a service.

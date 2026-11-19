@@ -1,3 +1,15 @@
+diff --git a/apps/host-daemon/src/server-client.ts b/apps/host-daemon/src/server-client.ts
+index 5870953..7db18c8 100644
+--- a/apps/host-daemon/src/server-client.ts
++++ b/apps/host-daemon/src/server-client.ts
+@@ -388,6 +388,7 @@ export function createServerClient(
+         dataDir: args.dataDir,
+         localApiPort: args.localApiPort,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         turnCommandThreadIds: args.turnCommandThreadIds,
+         activeThreads: await args.activeThreads,
+         openThreadWork: args.openThreadWork,
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
 index e55037d..7a8a630 100644
 --- a/apps/server/src/server.ts
@@ -17,10 +29,10 @@ index e55037d..7a8a630 100644
      db: deps.db,
 diff --git a/apps/server/src/services/execution-policies/runtime.test.ts b/apps/server/src/services/execution-policies/runtime.test.ts
 new file mode 100644
-index 0000000..7013425
+index 0000000..5f47bbf
 --- /dev/null
 +++ b/apps/server/src/services/execution-policies/runtime.test.ts
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,359 @@
 +import { afterEach, describe, it, expect } from "vitest";
 +import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 +import { tmpdir } from "node:os";
@@ -105,6 +117,31 @@ index 0000000..7013425
 +  return { runtime, options, row, rows, set, command, statePath };
 +}
 +describe("server-owned effective execution", () => {
++  it("omits unsupported reasoning for both effective and restored native execution while preserving raw source", () => {
++    const f = fixture(),
++      source = structuredClone(f.row.source),
++      request = f.command();
++    Object.assign(f.options.adapter, { reasoningLevels: () => [] });
++    f.set(true);
++    const sent = f.runtime.beforeTransport(request, "host");
++    expect(sent.options.model).toBe(profile.model);
++    expect(sent.options).not.toHaveProperty("reasoningLevel");
++    expect(
++      f.runtime.snapshot().receipts.thread!.effective.reasoningLevel,
++    ).toBeNull();
++    f.set(false);
++    const restored = f.runtime.beforeTransport(request, "host");
++    expect(restored.options).toMatchObject({
++      model: original.model,
++      serviceTier: original.serviceTier,
++      permissionMode: "full",
++      source: "client/turn/requested",
++      providerOptions: request.options.providerOptions,
++    });
++    expect(restored.options).not.toHaveProperty("reasoningLevel");
++    expect(request.options.reasoningLevel).toBe(original.reasoningLevel);
++    expect(f.row.source).toEqual(source);
++  });
 +  it.each(["thread.start", "turn.submit"])(
 +    "%s overlays explicit and queued execution without changing source, input or permission fields",
 +    (type) => {
@@ -357,10 +394,10 @@ index 0000000..7013425
 +});
 diff --git a/apps/server/src/services/execution-policies/runtime.ts b/apps/server/src/services/execution-policies/runtime.ts
 new file mode 100644
-index 0000000..f98abbd
+index 0000000..29ba284
 --- /dev/null
 +++ b/apps/server/src/services/execution-policies/runtime.ts
-@@ -0,0 +1,654 @@
+@@ -0,0 +1,666 @@
 +import { createHash, randomUUID } from "node:crypto";
 +import {
 +  closeSync,
@@ -393,6 +430,8 @@ index 0000000..f98abbd
 +  "safe-native-boundaries",
 +  "native-host-catalog",
 +  "restore-after-unload",
++  "catalog-profile-validation",
++  "native-host-handshake",
 +] as const;
 +export const executionProfileSchema = z
 +  .object({
@@ -482,6 +521,7 @@ index 0000000..f98abbd
 +export interface ExecutionPolicyAdapter {
 +  list(): ExecutionPolicyRow[];
 +  get(id: string): ExecutionPolicyRow | null;
++  reasoningLevels?(threadId: string, model: string): readonly string[] | null;
 +}
 +export interface ExecutionPolicyCommand {
 +  type: string;
@@ -957,6 +997,15 @@ index 0000000..f98abbd
 +          "The inherited original model is unresolved. Select a model before sending.",
 +        );
 +      const options = { ...command.options, ...(overlay ? profile : restore) };
++      const reasoningLevels =
++        typeof options.model === "string"
++          ? args.adapter.reasoningLevels?.(row.id, options.model)
++          : null;
++      if (
++        reasoningLevels &&
++        !reasoningLevels.includes(String(options.reasoningLevel))
++      )
++        delete (options as Record<string, unknown>).reasoningLevel;
 +      if (command.target?.expectedTurnId == null)
 +        change((s) => {
 +          s.receipts[row.id] = {
@@ -1017,10 +1066,10 @@ index 0000000..f98abbd
 +>;
 diff --git a/apps/server/src/services/execution-policies/service.test.ts b/apps/server/src/services/execution-policies/service.test.ts
 new file mode 100644
-index 0000000..67c49ac
+index 0000000..8da0518
 --- /dev/null
 +++ b/apps/server/src/services/execution-policies/service.test.ts
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,948 @@
 +import { describe, it, expect } from "vitest";
 +import { createProviderRegistryService } from "../providers/provider-registry.js";
 +import { registerFirstPartyProviders } from "../../../test/helpers/provider-registry.js";
@@ -1116,6 +1165,156 @@ index 0000000..67c49ac
 +    requestId: randomUUID(),
 +  });
 +describe("native execution-policy integration", () => {
++  it("retains original request readers across a configured profile identity change", async () => {
++    await withTestHarness(async (h) => {
++      const f = seedThreadFixture(h),
++        service = executionPolicyService(h.db)!;
++      await seedModelCatalog(h, {
++        hostId: f.host.id,
++        providerId: "codex",
++        models: [
++          availableModelFixture({
++            model: "first-small",
++            reasoningLevels: ["medium"],
++          }),
++          availableModelFixture({
++            model: "second-small",
++            reasoningLevels: ["medium"],
++          }),
++        ],
++      });
++      const command = await buildThreadStartCommand(h.deps, {
++        environment: f.environment,
++        execution: requested,
++        fork: null,
++        permissionEscalation: "ask",
++        input: [{ type: "text", text: "contract", mentions: [] }],
++        projectId: f.project.id,
++        providerId: "codex",
++        requestId: encodeClientTurnRequestIdNumber({ value: 101 }),
++        syncGeneratedTitle: false,
++        thread: f.thread,
++      });
++      const first = service.stage("economy", {
++        ...policy,
++        id: "first-profile",
++        profile: { ...policy.profile, model: "first-small" },
++      });
++      first.activate();
++      change(first.controller, true);
++      const sent = service.beforeTransport(command, f.host.id);
++      service.transportResult(sent, { ok: true });
++      expect(sent).toMatchObject({ options: { model: "first-small" } });
++      if (sent.type !== "thread.start") throw Error("Unexpected command");
++      change(first.controller, false);
++      first.controller.release();
++      const second = service.stage("economy", {
++        ...policy,
++        id: "second-profile",
++        profile: { ...policy.profile, model: "second-small" },
++      });
++      second.activate();
++      expect(second.controller.status().enabled).toBe(false);
++      change(second.controller, true);
++      const newer = service.beforeTransport(
++        {
++          ...command,
++          requestId: encodeClientTurnRequestIdNumber({ value: 102 }),
++        },
++        f.host.id,
++      );
++      service.transportResult(newer, { ok: true });
++      expect(newer).toMatchObject({ options: { model: "second-small" } });
++      if (newer.type !== "thread.start") throw Error("Unexpected command");
++      const {
++        model: _model,
++        reasoningLevel: _reasoning,
++        serviceTier: _tier,
++        ...inherited
++      } = command.options;
++      expect(
++        service.restore(f.thread.id, command.requestId, sent.options),
++      ).toEqual(inherited);
++      expect(
++        service.restore(f.thread.id, newer.requestId, newer.options),
++      ).toEqual(inherited);
++      second.controller.release();
++    });
++  });
++  it("accepts a catalog default without reasoning choices and rejects unknown discovery or unsupported tiers", async () => {
++    for (const kind of ["default", "unknown", "unsupported-tier"] as const) {
++      await withTestHarness(async (h) => {
++        const f = seedThreadFixture(h),
++          service = executionPolicyService(h.db)!;
++        const selected = {
++          ...policy,
++          profile: {
++            model: "small-model",
++            reasoningLevel: "default",
++            serviceTier: kind === "unsupported-tier" ? "invented" : "default",
++          },
++        };
++        await seedModelCatalog(h, {
++          hostId: f.host.id,
++          providerId: "codex",
++          models: [
++            {
++              ...availableModelFixture({
++                model: "small-model",
++                reasoningLevels: [],
++                defaultReasoningLevel: "default",
++              }),
++              reasoningDiscovery: kind === "unknown" ? "unknown" : "known",
++            },
++          ],
++        });
++        const lease = service.stage("economy", selected);
++        lease.activate();
++        change(lease.controller, true);
++        const state = lease.controller.status();
++        expect(state.ready).toBe(kind === "default" ? 1 : 0);
++        expect(state.unavailable.length).toBe(kind === "default" ? 0 : 1);
++        if (kind === "default") {
++          const command = await buildThreadStartCommand(h.deps, {
++            environment: f.environment,
++            execution: requested,
++            fork: null,
++            permissionEscalation: "ask",
++            input: [{ type: "text", text: "native contract", mentions: [] }],
++            projectId: f.project.id,
++            providerId: "codex",
++            requestId: encodeClientTurnRequestIdNumber({ value: 99 }),
++            syncGeneratedTitle: false,
++            thread: f.thread,
++          });
++          const original = structuredClone(command);
++          const responder = registerHostRpcResponder(h, {
++            hostId: f.host.id,
++            sessionId: f.session.id,
++            handle: () => ({
++              ok: true,
++              result: { providerThreadId: "native-session" },
++            }),
++          });
++          await callHostOnlineRpc(h.deps, {
++            hostId: f.host.id,
++            command,
++            timeoutMs: 1000,
++          });
++          const sent = responder.requests.at(-1)!.command;
++          if (sent.type !== "thread.start") throw Error("Unexpected command");
++          expect(sent.options).toMatchObject({
++            model: selected.profile.model,
++            serviceTier: selected.profile.serviceTier,
++          });
++          expect(sent.options).not.toHaveProperty("reasoningLevel");
++          expect(command).toEqual(original);
++          responder.unregister();
++        }
++        lease.controller.release();
++      });
++    }
++  });
 +  it("finishes OFF and notifies subscribers on the native idle event without status polling", async () => {
 +    await withTestHarness(async (h) => {
 +      const f = seedThreadFixture(h),
@@ -1821,10 +2020,10 @@ index 0000000..67c49ac
 +});
 diff --git a/apps/server/src/services/execution-policies/service.ts b/apps/server/src/services/execution-policies/service.ts
 new file mode 100644
-index 0000000..cfa8b5d
+index 0000000..c6666a3
 --- /dev/null
 +++ b/apps/server/src/services/execution-policies/service.ts
-@@ -0,0 +1,611 @@
+@@ -0,0 +1,634 @@
 +import { createHash, randomUUID } from "node:crypto";
 +import {
 +  existsSync,
@@ -1940,7 +2139,7 @@ index 0000000..cfa8b5d
 +      if (existsSync(tmp)) unlinkSync(tmp);
 +    }
 +  }
-+  function row(entry: Entry, thread: Thread): ExecutionPolicyRow {
++  function nativeModel(thread: Thread, providerId: string, model: string) {
 +    const hostId = threadTargetHostId(deps, thread),
 +      environment = thread.environmentId
 +        ? getEnvironment(deps.db, thread.environmentId)
@@ -1948,25 +2147,36 @@ index 0000000..cfa8b5d
 +    const checkout = hostId
 +      ? projectCheckoutPathOnHost(deps, thread.projectId, hostId)
 +      : null;
-+    const model = hostId
++    return hostId
 +      ? deps.lifecycleDedupers.providerModelCatalogs.getCachedModel(deps, {
 +          hostId,
-+          providerId: entry.providerId,
-+          model: entry.profile.model,
++          providerId,
++          model,
 +          workspacePaths: [environment?.path, checkout].filter(
 +            (v): v is string => typeof v === "string",
 +          ),
 +        })
 +      : null;
++  }
++  function row(entry: Entry, thread: Thread): ExecutionPolicyRow {
++    const hostId = threadTargetHostId(deps, thread),
++      model = nativeModel(thread, entry.providerId, entry.profile.model);
 +    const online = hostId !== null && deps.hub.hasDaemonForHost(hostId);
 +    const available =
 +      online &&
 +      deps.providerRegistry.get(entry.providerId) !== null &&
 +      !deps.providerRegistry.disabledProviderIds().has(entry.providerId) &&
 +      model !== null &&
-+      model.supportedReasoningEfforts.some(
-+        (item) => item.reasoningEffort === entry.profile.reasoningLevel,
-+      );
++      model.reasoningDiscovery === "known" &&
++      (model.supportedReasoningEfforts.length === 0
++        ? model.defaultReasoningEffort === entry.profile.reasoningLevel
++        : model.supportedReasoningEfforts.some(
++            (item) => item.reasoningEffort === entry.profile.reasoningLevel,
++          )) &&
++      (entry.profile.serviceTier === "default" ||
++        (model.supportedServiceTiers ?? []).some(
++          (item) => item.id === entry.profile.serviceTier,
++        ));
 +    const last = getStoredThreadExecutionOptions(deps, thread),
 +      override = getThreadExecutionOverride(deps.db, thread.id);
 +    return {
@@ -1986,7 +2196,7 @@ index 0000000..cfa8b5d
 +      unavailableReason: !online
 +        ? "Host is unavailable. Settings are preserved."
 +        : !available
-+          ? "The policy model and reasoning level are not confirmed by the native host catalog."
++          ? "The policy profile is not confirmed by the native host catalog."
 +          : null,
 +      source: {
 +        providerId: thread.providerId,
@@ -2026,6 +2236,18 @@ index 0000000..cfa8b5d
 +          }
 +        },
 +        adapter: {
++          reasoningLevels: (id, model) => {
++            const thread = getThread(deps.db, id);
++            return thread
++              ? (nativeModel(
++                  thread,
++                  entry.providerId,
++                  model,
++                )?.supportedReasoningEfforts.map(
++                  (level) => level.reasoningEffort,
++                ) ?? null)
++              : null;
++          },
 +          list: () =>
 +            deps.db
 +              .select()
@@ -2842,11 +3064,418 @@ index e9c4f5c..5bd4d7f 100644
        await pluginService.stopPeriodicUpdateChecks();
        if (pendingServerMove === null) {
          await pluginService.stop().catch((error: unknown) => {
+diff --git a/apps/server/test/app/host-shared-ports.test.ts b/apps/server/test/app/host-shared-ports.test.ts
+index 2ee1778..1e27cf9 100644
+--- a/apps/server/test/app/host-shared-ports.test.ts
++++ b/apps/server/test/app/host-shared-ports.test.ts
+@@ -465,6 +465,7 @@ describe("daemon session connect shares", () => {
+           dataDir: "/tmp/host-data",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+         }),
+@@ -499,6 +500,7 @@ describe("daemon session connect shares", () => {
+           dataDir: "/tmp/host-data",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+         }),
+@@ -566,6 +568,7 @@ describe("daemon session connect shares", () => {
+           dataDir: "/tmp/host-data",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+         }),
+diff --git a/apps/server/test/app/skeleton.test.ts b/apps/server/test/app/skeleton.test.ts
+index 62dc4a2..eaf4d1e 100644
+--- a/apps/server/test/app/skeleton.test.ts
++++ b/apps/server/test/app/skeleton.test.ts
+@@ -218,6 +218,7 @@ describe("server skeleton", () => {
+           dataDir: "/tmp/host-data",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+         }),
+diff --git a/apps/server/test/app/websocket-compression.test.ts b/apps/server/test/app/websocket-compression.test.ts
+index 4871aaf..a387579 100644
+--- a/apps/server/test/app/websocket-compression.test.ts
++++ b/apps/server/test/app/websocket-compression.test.ts
+@@ -136,6 +136,7 @@ describe("WebSocket compression", () => {
+         dataDir: "/tmp/host-data",
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [],
+         openThreadWork: [],
+       }),
+diff --git a/apps/server/test/environments/environment-lifecycle-orderings.test.ts b/apps/server/test/environments/environment-lifecycle-orderings.test.ts
+index 97f9a59..244bcb4 100644
+--- a/apps/server/test/environments/environment-lifecycle-orderings.test.ts
++++ b/apps/server/test/environments/environment-lifecycle-orderings.test.ts
+@@ -621,6 +621,7 @@ class Machine {
+         dataDir: this.hostDataDir,
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [],
+         openThreadWork: [],
+       }),
+diff --git a/apps/server/test/hosts/daemon-session-resume.test.ts b/apps/server/test/hosts/daemon-session-resume.test.ts
+index 28ed4e2..c8ee30f 100644
+--- a/apps/server/test/hosts/daemon-session-resume.test.ts
++++ b/apps/server/test/hosts/daemon-session-resume.test.ts
+@@ -67,6 +67,7 @@ async function openSession(baseUrl: string): Promise<string> {
+       dataDir: "/tmp/host-data",
+       localApiPort: null,
+       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++      executionPolicyProtocol: "bb.execution-policy/v1",
+       activeThreads: [],
+       openThreadWork: [],
+     }),
+@@ -240,6 +241,7 @@ async function openMockDaemon(harness: TestAppHarness) {
+       dataDir: "/tmp/host-data",
+       localApiPort: null,
+       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++      executionPolicyProtocol: "bb.execution-policy/v1",
+       activeThreads: [],
+       openThreadWork: [],
+     }),
+diff --git a/apps/server/test/internal/background-task-reconciliation.test.ts b/apps/server/test/internal/background-task-reconciliation.test.ts
+index fd507a2..2a1dffb 100644
+--- a/apps/server/test/internal/background-task-reconciliation.test.ts
++++ b/apps/server/test/internal/background-task-reconciliation.test.ts
+@@ -151,6 +151,7 @@ async function reopenSessionWithoutThreads(
+       dataDir: "/tmp/host-daemon-reopened",
+       localApiPort: null,
+       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++      executionPolicyProtocol: "bb.execution-policy/v1",
+       activeThreads: [],
+       openThreadWork: [],
+     }),
+@@ -179,6 +180,7 @@ async function reopenSessionBeforeSlowSocket(
+       dataDir: "/tmp/host-daemon-slow-socket",
+       localApiPort: null,
+       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++      executionPolicyProtocol: "bb.execution-policy/v1",
+       activeThreads: [{ threadId: fixture.thread.id }],
+       openThreadWork: [],
+     }),
+@@ -487,6 +489,7 @@ describe("background-task lifecycle reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-task-settle-restart",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+         }),
+@@ -524,6 +527,7 @@ describe("background-task lifecycle reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-task-settle-same-instance",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [
+             {
+@@ -565,6 +569,7 @@ describe("background-task lifecycle reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-task-settle-same-instance-gone",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+         }),
+@@ -602,6 +607,7 @@ describe("background-task lifecycle reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-task-settle-same-instance-buffered",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           undeliveredEventThreadIds: [thread.id],
+@@ -633,6 +639,7 @@ describe("background-task lifecycle reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-task-live-same-instance",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [
+             {
+@@ -687,6 +694,7 @@ describe("background-task lifecycle reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-task-live-restarted",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+         }),
+@@ -757,6 +765,7 @@ describe("active thread disconnect reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-active-same-instance",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [{ threadId: thread.id }],
+           openThreadWork: [],
+         }),
+@@ -794,6 +803,7 @@ describe("active thread disconnect reconciliation triggers", () => {
+             dataDir: "/tmp/host-daemon-active-restarted-instance",
+             localApiPort: null,
+             protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++            executionPolicyProtocol: "bb.execution-policy/v1",
+             activeThreads: [],
+             openThreadWork: [],
+           }),
+@@ -981,6 +991,7 @@ describe("active thread disconnect reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-held-events",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           undeliveredEventThreadIds: [thread.id],
+@@ -1071,6 +1082,7 @@ describe("active thread disconnect reconciliation triggers", () => {
+           dataDir: "/tmp/host-daemon-stop-after-reconnect",
+           localApiPort: null,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [{ threadId: thread.id }],
+           openThreadWork: [],
+         }),
+@@ -1124,6 +1136,7 @@ describe("active thread disconnect reconciliation triggers", () => {
+         dataDir: "/tmp/host-daemon-revive-after-new-turn",
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [{ threadId: fixture.thread.id }],
+         openThreadWork: [],
+       }),
+diff --git a/apps/server/test/internal/internal-session-protocol-version.test.ts b/apps/server/test/internal/internal-session-protocol-version.test.ts
+index ca65c6a..ca99510 100644
+--- a/apps/server/test/internal/internal-session-protocol-version.test.ts
++++ b/apps/server/test/internal/internal-session-protocol-version.test.ts
+@@ -26,6 +26,55 @@ function createHostDaemonClient(baseUrl: string, hostKey: string) {
+ }
+ 
+ describe("internal session protocol version", () => {
++  it("rejects a matching protocol number without the explicit native provenance handshake", async () => {
++    const server = await startTestServer();
++    try {
++      const hostId = "native-handshake-host",
++        hostKey = createTestDaemonHostKey({ hostId });
++      upsertHost(server.db, server.hub, {
++        id: hostId,
++        name: "Native test host",
++      });
++      const payload = {
++        hostId,
++        instanceId: "native-instance",
++        hostName: "Native test host",
++        hasMachineCredential: true,
++        platform: "linux",
++        dataDir: "/tmp/native-handshake-test",
++        localApiPort: null,
++        protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        activeThreads: [],
++        openThreadWork: [],
++      };
++      const open = (value: unknown) =>
++        fetch(`${server.baseUrl}/internal/session/open`, {
++          method: "POST",
++          headers: {
++            authorization: `Bearer ${hostKey}`,
++            "content-type": "application/json",
++          },
++          body: JSON.stringify(value),
++        });
++      for (const value of [
++        payload,
++        { ...payload, executionPolicyProtocol: "unknown" },
++      ]) {
++        const rejected = await open(value);
++        expect(rejected.status).toBe(400);
++        expect(await rejected.json()).toMatchObject({
++          code: "invalid_request",
++        });
++      }
++      const accepted = await open({
++        ...payload,
++        executionPolicyProtocol: "bb.execution-policy/v1",
++      });
++      expect(accepted.status).toBe(201);
++    } finally {
++      await server.close();
++    }
++  });
+   it.each(["suspending", "suspended"] as const)(
+     "rejects a session open while the machine is %s",
+     async (phase) => {
+@@ -53,6 +102,7 @@ describe("internal session protocol version", () => {
+               dataDir: `/tmp/${hostId}`,
+               localApiPort: 38_888,
+               protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++              executionPolicyProtocol: "bb.execution-policy/v1",
+               activeThreads: [],
+               openThreadWork: [],
+               turnCommandThreadIds: [],
+@@ -102,6 +152,7 @@ describe("internal session protocol version", () => {
+           dataDir: `/tmp/${hostId}`,
+           localApiPort: 38_888,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           turnCommandThreadIds: [],
+@@ -219,6 +270,7 @@ describe("internal session protocol version", () => {
+           dataDir: "/tmp/host-protocol-data",
+           localApiPort: 38_888,
+           protocolVersion: staleProtocolVersion,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           turnCommandThreadIds: [],
+@@ -258,6 +310,7 @@ describe("internal session protocol version", () => {
+           dataDir: "/tmp/host-protocol-data",
+           localApiPort: 38_888,
+           protocolVersion: staleProtocolVersion,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           turnCommandThreadIds: [],
+@@ -279,6 +332,7 @@ describe("internal session protocol version", () => {
+           dataDir: "/tmp/host-protocol-data",
+           localApiPort: 38_888,
+           protocolVersion: staleProtocolVersion,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           turnCommandThreadIds: [],
+@@ -300,6 +354,7 @@ describe("internal session protocol version", () => {
+           dataDir: "/tmp/host-protocol-data",
+           localApiPort: 38_888,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           turnCommandThreadIds: [],
+diff --git a/apps/server/test/internal/reconnect-recovery-waits-for-plugins.test.ts b/apps/server/test/internal/reconnect-recovery-waits-for-plugins.test.ts
+index 6fe72fd..3f1a5b9 100644
+--- a/apps/server/test/internal/reconnect-recovery-waits-for-plugins.test.ts
++++ b/apps/server/test/internal/reconnect-recovery-waits-for-plugins.test.ts
+@@ -80,6 +80,7 @@ function openSession(
+         dataDir: "/tmp/host-daemon-reopened",
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: args.activeThreadIds.map((threadId) => ({ threadId })),
+         openThreadWork: [],
+       }),
+diff --git a/apps/server/test/public/public-host-management.test.ts b/apps/server/test/public/public-host-management.test.ts
+index d4ae219..ace74c2 100644
+--- a/apps/server/test/public/public-host-management.test.ts
++++ b/apps/server/test/public/public-host-management.test.ts
+@@ -355,6 +355,7 @@ describe("public host management", () => {
+             localApiPort: 38_888,
+             platform: "linux",
+             protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++            executionPolicyProtocol: "bb.execution-policy/v1",
+           }),
+         },
+       );
+diff --git a/apps/server/test/server-move/pending-boot.test.ts b/apps/server/test/server-move/pending-boot.test.ts
+index bcbd1b3..7afd449 100644
+--- a/apps/server/test/server-move/pending-boot.test.ts
++++ b/apps/server/test/server-move/pending-boot.test.ts
+@@ -574,6 +574,7 @@ function sessionOpenRequest(hostId: string, hostName: string) {
+       dataDir: "/home/me/.bb",
+       localApiPort: 38_888,
+       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++      executionPolicyProtocol: "bb.execution-policy/v1",
+       activeThreads: [],
+       openThreadWork: [],
+       loadedEnvironments: [],
+@@ -773,6 +774,7 @@ describe("pending server mode", () => {
+           dataDir: "/home/me/.bb-machines/laptop",
+           localApiPort: 38_888,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           loadedEnvironments: [],
+diff --git a/apps/server/test/server-move/routes.test.ts b/apps/server/test/server-move/routes.test.ts
+index 82265fa..331fff2 100644
+--- a/apps/server/test/server-move/routes.test.ts
++++ b/apps/server/test/server-move/routes.test.ts
+@@ -344,6 +344,7 @@ describe("server move routes", () => {
+           dataDir: "/home/me/.bb-machines/laptop",
+           localApiPort: 38_888,
+           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++          executionPolicyProtocol: "bb.execution-policy/v1",
+           activeThreads: [],
+           openThreadWork: [],
+           loadedEnvironments: [],
+@@ -394,10 +395,10 @@ describe("server move routes", () => {
+           method: "DELETE",
+           headers: machine,
+         }),
+-        harness.app.request(
+-          `${API}/hosts/${OLD}/old-server-copy/delete-jobs`,
+-          { method: "POST", headers: machine },
+-        ),
++        harness.app.request(`${API}/hosts/${OLD}/old-server-copy/delete-jobs`, {
++          method: "POST",
++          headers: machine,
++        }),
+       ]);
+       for (const response of responses) {
+         expect(response.status).toBe(403);
+diff --git a/apps/server/test/threads/restart-resume.test.ts b/apps/server/test/threads/restart-resume.test.ts
+index 037a4b8..e0048a0 100644
+--- a/apps/server/test/threads/restart-resume.test.ts
++++ b/apps/server/test/threads/restart-resume.test.ts
+@@ -256,6 +256,7 @@ async function restartDaemon(
+       dataDir: `/tmp/bb-host-data/${fixture.host.id}`,
+       localApiPort: null,
+       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++      executionPolicyProtocol: "bb.execution-policy/v1",
+       activeThreads: [],
+       openThreadWork: [],
+     }),
+diff --git a/apps/server/test/threads/thread-provisioning-recovery.test.ts b/apps/server/test/threads/thread-provisioning-recovery.test.ts
+index b710340..facfb2c 100644
+--- a/apps/server/test/threads/thread-provisioning-recovery.test.ts
++++ b/apps/server/test/threads/thread-provisioning-recovery.test.ts
+@@ -999,6 +999,7 @@ it("resumes workspace setup when the same daemon reconnects", async () => {
+         dataDir: "/tmp/provision-reconnect-host-data",
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [],
+         openThreadWork: [],
+       }),
+diff --git a/apps/server/test/threads/turn-start-deadline.test.ts b/apps/server/test/threads/turn-start-deadline.test.ts
+index f150bd3..668c7ce 100644
+--- a/apps/server/test/threads/turn-start-deadline.test.ts
++++ b/apps/server/test/threads/turn-start-deadline.test.ts
+@@ -522,6 +522,7 @@ describe("a thread start whose reply is lost with the daemon connection", () =>
+         dataDir: "/tmp/host-daemon-lost-start-reply",
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         turnCommandThreadIds: daemon === "starting" ? [fixture.threadId] : [],
+         activeThreads:
+           daemon === "running" ? [{ threadId: fixture.threadId }] : [],
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 7746895..d047316 100644
+index 7746895..f334253 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -5008,3 +5008,36 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
+@@ -5008,3 +5008,44 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
  replacement. Settle the shared process-local instance lifecycle across SDK
  bundle versions and whether `bundledNpmCli` belongs on the public surface before
  removing the prefix.
@@ -2865,6 +3494,12 @@ index 7746895..d047316 100644
 +owners leave source restoration active and effective overlays disabled.
 +
 +Protocol `bb.execution-policy/v1` describes the required semantic identifiers.
++`catalog-profile-validation` confirms that native host catalogs validate reasoning
++and service tiers. Models without reasoning choices accept only their known
++catalog default; unknown discovery and unsupported tiers remain unavailable.
++Final transport omits reasoning that the target model does not support, using
++the same native catalog rule for effective and restored execution. Raw original
++profiles and provider-specific options remain unchanged.
 +All public status and refusal messages use English. The Plugin Guide lists the
 +SDK symbols under Effective execution policies. Every native send uses the same
 +final boundary; message.dispatch remains proceed/wait/reject only.
@@ -2872,7 +3507,9 @@ index 7746895..d047316 100644
 +Before stabilization, audit multi-host provider continuation, crash/restart and
 +uninstall restoration, journal corruption, immutable null/Fast profiles, native
 +catalog cancellation and cooldown, concurrent plugin reloads, provenance retention,
-+and target-host changes after preparation. No daemon wire fields are added.
++and target-host changes after preparation. Companion session handshakes require
++`executionPolicyProtocol=bb.execution-policy/v1` as well as protocol 273. This
++prevents stock daemons with a matching numeric version from being admitted.
 +
 +Policy activation waits on the native provider registry when factories load
 +in a different startup order. Pending controllers remain unavailable until
@@ -3058,15 +3695,91 @@ index 66621ad..a3e46e5 100644
    DbConnection,
    DbQueryConnection,
 diff --git a/packages/host-daemon-contract/src/protocol.ts b/packages/host-daemon-contract/src/protocol.ts
-index 699d6f6..947d5fc 100644
+index 699d6f6..933528d 100644
 --- a/packages/host-daemon-contract/src/protocol.ts
 +++ b/packages/host-daemon-contract/src/protocol.ts
 @@ -1,4 +1,4 @@
 -export const HOST_DAEMON_PROTOCOL_VERSION = 271 as const;
-+export const HOST_DAEMON_PROTOCOL_VERSION = 272 as const;
++export const HOST_DAEMON_PROTOCOL_VERSION = 273 as const;
  
  export const HOST_DAEMON_DESKTOP_BROKER_PROOF_PROTOCOL_VERSION = 248 as const;
  
+diff --git a/packages/host-daemon-contract/src/session.ts b/packages/host-daemon-contract/src/session.ts
+index e63aaec..09de60d 100644
+--- a/packages/host-daemon-contract/src/session.ts
++++ b/packages/host-daemon-contract/src/session.ts
+@@ -128,6 +128,7 @@ export const hostDaemonSessionOpenRequestSchema = z
+     dataDir: z.string().min(1),
+     localApiPort: z.number().int().min(1).max(65_535).nullable().default(null),
+     protocolVersion: z.number().int().positive(),
++    executionPolicyProtocol: z.literal("bb.execution-policy/v1"),
+     turnCommandThreadIds: z.array(z.string().min(1)).default([]),
+     activeThreads: z.array(hostDaemonActiveThreadSchema),
+     openThreadWork: z.array(hostDaemonOpenThreadWorkSchema),
+diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
+index ef8b65f..f53d9fc 100644
+--- a/packages/host-daemon-contract/test/contract.test.ts
++++ b/packages/host-daemon-contract/test/contract.test.ts
+@@ -1070,7 +1070,7 @@ describe("host-daemon command schemas", () => {
+   });
+ 
+   it("uses the current host-daemon protocol version", () => {
+-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(271);
++    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(273);
+     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
+   });
+ 
+@@ -1101,7 +1101,9 @@ describe("host-daemon command schemas", () => {
+     expect(contract.isCompatibleHostDaemonProtocolVersion(268)).toBe(false);
+     expect(contract.isCompatibleHostDaemonProtocolVersion(269)).toBe(false);
+     expect(contract.isCompatibleHostDaemonProtocolVersion(270)).toBe(false);
+-    expect(contract.isCompatibleHostDaemonProtocolVersion(271)).toBe(true);
++    expect(contract.isCompatibleHostDaemonProtocolVersion(271)).toBe(false);
++    expect(contract.isCompatibleHostDaemonProtocolVersion(272)).toBe(false);
++    expect(contract.isCompatibleHostDaemonProtocolVersion(273)).toBe(true);
+     expect(contract.hostDaemonSupportsDesktopBrokerProof(247)).toBe(false);
+     expect(contract.hostDaemonSupportsDesktopBrokerProof(248)).toBe(true);
+   });
+@@ -2780,6 +2782,7 @@ describe("host-daemon session schemas", () => {
+         dataDir: "/tmp/bb-data",
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [],
+       }).success,
+     ).toBe(false);
+@@ -2796,6 +2799,7 @@ describe("host-daemon session schemas", () => {
+         dataDir: "/tmp/bb-data",
+         localApiPort: 38_887,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [
+           {
+             threadId: "thr_123",
+@@ -2832,6 +2836,7 @@ describe("host-daemon session schemas", () => {
+         dataDir: "/tmp/bb-data",
+         localApiPort: null,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [],
+         openThreadWork: [],
+         loadedEnvironments: [
+@@ -2858,6 +2863,7 @@ describe("host-daemon session schemas", () => {
+         dataDir: "/tmp/bb-data",
+         localApiPort: 38_887,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [
+           {
+             threadId: "",
+@@ -2877,6 +2883,7 @@ describe("host-daemon session schemas", () => {
+         dataDir: "/tmp/bb-data",
+         localApiPort: 38_887,
+         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION - 1,
++        executionPolicyProtocol: "bb.execution-policy/v1",
+         activeThreads: [],
+         openThreadWork: [],
+       }),
 diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
 index e030001..e5d2547 100644
 --- a/packages/plugin-sdk/src/__tests__/public-types.test.ts

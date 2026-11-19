@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-economy",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "type": "module",
   "engines": {
     "bb": ">=0.50.1",
@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Economy [Experimental]",
-    "description": "Use a smaller Codex profile when quota runs low. Requires the included companion native BB integration; stock BB is unsupported.",
+    "description": "Choose your main and Economy models from BB\u2019s catalog. Requires the included companion native BB integration; stock BB is unsupported.",
     "branding": {
       "icon": "./assets/battery.svg",
       "experimental_icons": {
@@ -54,11 +54,12 @@
     "react-dom": "19.3.1"
   },
   "license": "MIT",
-  "description": "Use a lower-cost Codex profile across threads, with automatic activation at 5% remaining.",
+  "description": "Switch between original profiles and your chosen Economy model, with optional quota-based activation.",
   "files": [
     "server.ts",
     "app.tsx",
     "control.tsx",
+    "setup.tsx",
     "economy.css",
     "lib/",
     "assets/",

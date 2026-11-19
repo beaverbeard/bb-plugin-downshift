@@ -6,7 +6,7 @@ export interface ModeOperation {enabled: boolean; expectedGeneration: number; re
 export interface AutomaticRecord {
   version: 1;
   consumed: Record<string, number>;
-  pending: {input: ModeOperation; keys: Record<string, number>} | null;
+  pending: {input: ModeOperation; keys: Record<string, number>; policyId?: string} | null;
   /** Manual OFF with unknown quota binds the first confirmed windows after recovery. */
   holdForFreshQuota?: boolean;
 }
@@ -16,6 +16,7 @@ export interface AutomaticPorts {
   mode(): ModeState | Promise<ModeState>;
   set(input: ModeOperation): ModeState | Promise<ModeState>;
   primaryModel: string;
+  policyId?: string;
   now?: () => number;
   uuid?: () => string;
 }
@@ -29,6 +30,7 @@ export class AutomaticEconomy {
   private disposed = false;
   constructor(private ports: AutomaticPorts) {}
   dispose() {this.disposed = true;}
+  settled() {return this.queue;}
   private serialize(action: () => Promise<void>): Promise<void> {
     const result = this.queue.then(action);
     this.queue = result.catch(() => {});
@@ -42,7 +44,10 @@ export class AutomaticEconomy {
       || Object.entries(saved.consumed).some(([key, expiry]) => !key || !Number.isFinite(expiry))
       || (saved.pending !== null && (!saved.pending || !saved.pending.input || saved.pending.input.enabled !== true
         || !Number.isSafeInteger(saved.pending.input.expectedGeneration) || saved.pending.input.expectedGeneration < 0
-        || !/^[0-9a-f-]{36}$/i.test(saved.pending.input.requestId) || !saved.pending.keys || typeof saved.pending.keys !== 'object')))) {
+        || !/^[0-9a-f-]{36}$/i.test(saved.pending.input.requestId)
+        || (saved.pending.policyId !== undefined && (typeof saved.pending.policyId !== 'string' || !saved.pending.policyId || saved.pending.policyId.length > 64))
+        || !saved.pending.keys || typeof saved.pending.keys !== 'object' || Array.isArray(saved.pending.keys)
+        || Object.entries(saved.pending.keys).some(([key, expiry]) => !key || !Number.isFinite(expiry)))))) {
       throw Error('Invalid automatic activation record');
     }
     this.record = saved ?? {version: 1, consumed: {}, pending: null};
@@ -62,6 +67,7 @@ export class AutomaticEconomy {
     return this.serialize(async () => {
       if (this.disposed) return;
       await this.load();
+      if (this.disposed) return;
       const keys = this.lowWindows(usage);
       // Also suppress an uncertain in-flight automatic operation before manual OFF.
       const next: AutomaticRecord = {version: 1, consumed: {...this.record!.consumed, ...this.record!.pending?.keys, ...keys}, pending: null, holdForFreshQuota: keys === null};
@@ -92,7 +98,7 @@ export class AutomaticEconomy {
           return;
         }
         const pending = this.record!.pending;
-        if (pending && (mode.enabled || mode.generation !== pending.input.expectedGeneration)) {
+        if (pending && (pending.policyId !== this.ports.policyId || mode.enabled || mode.generation !== pending.input.expectedGeneration)) {
           const next: AutomaticRecord = {version: 1, consumed: {...consumed, ...pending.keys}, pending: null};
           await this.ports.save(next); this.record = next;
           this.view = mode.enabled ? {status: 'enabled', message: 'Economy is on. Automatic activation never turns it off.'}
@@ -113,7 +119,7 @@ export class AutomaticEconomy {
             : {status: 'waiting', message: 'Auto on at 5% remaining in any active Codex quota window.'};
           return;
         }
-        const operation = pending ?? {input: {enabled: true, expectedGeneration: mode.generation, requestId: (this.ports.uuid ?? randomUUID)()}, keys: fresh};
+        const operation = pending ?? {policyId: this.ports.policyId, input: {enabled: true, expectedGeneration: mode.generation, requestId: (this.ports.uuid ?? randomUUID)()}, keys: fresh};
         if (!pending) {const next: AutomaticRecord = {version: 1, consumed, pending: operation}; await this.ports.save(next); this.record = next;}
         if (this.disposed) return;
         const result = await this.ports.set(operation.input);

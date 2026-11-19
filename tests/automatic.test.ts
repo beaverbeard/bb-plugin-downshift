@@ -12,7 +12,7 @@ function fixture() {
   let mode: ModeState = {available: true, enabled: false, generation: 7, error: null};
   const calls: ModeOperation[] = [];
   let fail = false, writeFails = false;
-  const ports = {now: () => now, primaryModel: 'primary', load: async () => structuredClone(saved),
+  const ports = {now: () => now, primaryModel: 'primary', policyId: 'original-policy', load: async () => structuredClone(saved),
     save: async (s: AutomaticRecord) => {if (writeFails) throw Error('disk'); saved = structuredClone(s);}, mode: () => mode,
     set: (input: ModeOperation) => {calls.push({...input}); if (fail) throw Error('uncertain'); mode = {...mode, enabled: true, generation: mode.generation + 1}; return mode;}};
   return {ports, calls, create: () => new AutomaticEconomy(ports), mode: (value: Partial<ModeState>) => {mode = {...mode, ...value};},
@@ -92,4 +92,21 @@ test('native quota adapter strips account data and rejects invalid windows', () 
   assert.equal(s?.windows[0]?.remaining_percent, 5); assert.ok(!JSON.stringify(s).includes('private'));
   assert.equal(nativeQuota({codex: {status: 'error'}}, 'primary', now), null);
   assert.equal(nativeQuota({codex: {status: 'ok', windows: [{usedPercent: 95, resetsAt: null}]}}, 'primary', now), null);
+});
+
+test('a pending automatic operation cannot follow a different policy even when generations match; shared manual suppression survives primary-model changes',async()=>{
+ const f=fixture();f.ports.policyId='old-policy';f.fail(true);await f.create().observe(sample());assert.equal(f.calls.length,1);
+ f.ports.policyId='new-policy';f.fail(false);await f.create().observe(sample());assert.equal(f.calls.length,1);assert.equal(f.saved()!.pending,null);
+ f.mode({enabled:true});await f.create().suppress(null);f.mode({enabled:false});f.ports.primaryModel='another-main';
+ await f.create().observe({...sample(3),model:'another-main'});await f.create().observe({...sample(3),model:'another-main'});assert.equal(f.calls.length,1);
+ await f.create().observe({...sample(3,now/1000+7200),model:'another-main'});assert.equal(f.calls.length,2);
+});
+
+test('corruption of a prepared operation cannot activate despite matching low quota and generation',async()=>{
+ for(const fault of ['expiry','policy'] as const){
+  const f=fixture();f.fail(true);await f.create().observe(sample());const bad=structuredClone(f.saved()!);
+  if(fault==='expiry')bad.pending!.keys[Object.keys(bad.pending!.keys)[0]!]=NaN;
+  else (bad.pending! as any).policyId={unexpected:true};
+  f.ports.load=async()=>bad;f.fail(false);const auto=f.create();await auto.observe(sample());assert.equal(f.calls.length,1);assert.equal(auto.view.status,'error');
+ }
 });

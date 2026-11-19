@@ -11,14 +11,12 @@
   "normalization": "Scale 256 coordinates to a 24 viewBox without changing the path",
   "controlIcons": [
     {
-      "family": "Phosphor",
-      "weight": "fill",
-      "version": "2.1.1",
+      "family": "Material Design Icons",
       "icon": "rabbit",
-      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/fill/rabbit-fill.svg",
-      "license": "MIT",
-      "originalSha256": "d8b14c2ad2b482e5627568ea7841cec21bc0608b0804e537031fd2a8bdf067f5",
-      "normalizedSha256": "e6ee39d9aff989623e80c0747cf42a0e9461277c11fb12c0f45963bfed98c3ff"
+      "source": "https://raw.githubusercontent.com/Templarian/MaterialDesign/2424e748e0cc63ab7b9c095a099b9fe239b737c0/svg/rabbit.svg",
+      "license": "Apache-2.0",
+      "originalSha256": "75e23000a60bbaff61dea6064dfc96a9c854372996163523dec19313faf9aa28",
+      "normalizedSha256": "823d472324995caf11ae5be054922651aa3bfa018c7737a0bb9c8a945f4d4cf4"
     },
     {
       "family": "Material Design Icons",

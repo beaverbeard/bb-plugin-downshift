@@ -7,14 +7,18 @@ BB 0.50.1 at upstream commit `df9619d8e8aac4aff00c0c3ff9b8ef4e2823e4f2`, with SD
 patch checksum and validation evidence are in `native-manifest.json`. Its
 `reviewedNativeCommit` identifies the local tested tree; it is not an upstream
 commit to check out. Applying the included patch to `baseCommit` reproduces its
-26 changed source files.
+43 changed source files.
 
 The integration implements the experimental `bb.execution-policy/v1` service.
 Core owns effective execution, immutable original profiles, generation CAS,
 UUID deduplication, durable request provenance, native host catalog checks and
 restore readers. A plugin may register only model, reasoning level and service
 tier for one provider. It cannot change the provider, input, permissions or
-history. Economy registers the Codex Luna/medium/default profile.
+history. Economy registers the user-selected profile for one provider. Native catalogs
+validate reasoning and service tiers. A model without reasoning choices accepts
+only its known catalog default; no unsupported reasoning argument is sent.
+The same native catalog normalization applies when restoring a profile. Unknown
+discovery remains unavailable.
 
 ## Build from the exact source
 
@@ -40,10 +44,11 @@ This integration was validated on Linux x64 with Node 24.15.0. Other server
 platforms have not been validated. The build requires BB's normal Node and native
 build prerequisites. The patch
 includes SDK declarations, a Plugin Guide card, the API audit entry and native
-regression tests. It changes host protocol **271 to 272**: the companion server
+regression tests. It changes host protocol **271 to 273**: the companion server
 and every execution host must use artifacts built from the same patched source.
-An old daemon must not be treated as compatible merely because its BB version
-number matches. Deploy the reviewed build through BB’s normal explicit source
+The native handshake also requires `executionPolicyProtocol=bb.execution-policy/v1`.
+A stock daemon with a coincidentally matching numeric protocol is rejected. An
+old daemon must not be treated as compatible because its BB version matches. Deploy the reviewed build through BB’s normal explicit source
 installation process; this package does not automate that deployment. For a new local
 instance, the companion launcher can start both server and primary daemon:
 
@@ -51,7 +56,8 @@ instance, the companion launcher can start both server and primary daemon:
 BB_DATA_DIR="$PWD/.economy-evaluation" \
 BB_SERVER_URL=http://127.0.0.1:38976 \
 node packages/bb-app/dist/bb-app.js --data-dir "$PWD/.economy-evaluation" \
-  --server-bind-host 127.0.0.1 --server-port 38976 --host-daemon-port 38977
+  --server-bind-host 127.0.0.1 --server-port 38976 --host-daemon-port 38977 \
+  --bundled --no-in-app-updates
 ```
 
 Choose unused ports and a new data directory. The two-port example is for a
@@ -81,9 +87,10 @@ env -u BB_CLI -u BB_THREAD_ID -u BB_PROJECT_ID -u BB_ENVIRONMENT_ID \
   node packages/bb-app/dist/bb.js plugin rpc call economy economy_state --json
 ```
 
-Require `available:true`, no state error, and a profile of `gpt-6-luna`,
-`medium`, `default`. On activation, each actual target host must confirm that
-model/reasoning pair through BB's native catalog. Offline or unavailable hosts
+Open Economy’s Models section and choose a main and Economy model from the
+current BB catalog. Setup does not enable the mode. Require `available:true`,
+no state error, and the exact profile you selected. On activation, every target
+host must confirm that profile through BB’s native catalog. Offline or unavailable hosts
 remain visible and wait; there is no expensive or cross-provider fallback.
 Observe the actual requested and effective execution in the native journal
 under the selected data directory. Never enable a real global mode just to
