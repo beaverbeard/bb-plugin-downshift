@@ -13,7 +13,7 @@ export function checkSelection(config:Configuration,catalog:Catalog){
  if(catalog.error)throw Error(catalog.error);
  if(!catalog.models.some(m=>m.model===config.primaryModel))throw Error('Choose your main model from the current BB catalog.');
  const model=catalog.models.find(m=>m.model===config.profile.model);
- if(!model)throw Error('Choose an Economy model from the same provider.');
+ if(!model)throw Error('Choose a Downshift model from the same provider.');
  if(!model.reasoningLevels.some(level=>level.id===config.profile.reasoningLevel))throw Error('Choose a supported reasoning level.');
  if(!model.serviceTiers.some(tier=>tier.id===config.profile.serviceTier))throw Error('Choose a supported service tier.');
  if(config.autoEnabled&&config.providerId!=='codex')throw Error('Automatic activation needs verified quota semantics. This provider currently supports manual switching.');

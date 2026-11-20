@@ -4,7 +4,7 @@ import type {BbPluginApi} from '@get-bb/plugin-sdk';
 import {experimental_scanPublicSdkOnly} from '@get-bb/plugin-sdk/testing';
 import plugin from '../server';
 import {nativeProtocol,requiredSemantics,type NativeExecutionPolicies} from '../lib/native-contract';
-import {unavailableEconomy} from '../lib/state';
+import {unavailableDownshift} from '../lib/state';
 import type {Configuration} from '../lib/configuration';
 import {policyId} from '../lib/policy-id';
 
@@ -21,7 +21,7 @@ function nativeFixture(){
  let releases=0,unsubscribed=0,mutations=0,changed=()=>{};
  const declarations:any[]=[];
  const native:NativeExecutionPolicies={describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics}),register:declaration=>{
-  declarations.push(declaration);let state={...unavailableEconomy(),profile:declaration.profile,available:true,error:null};
+  declarations.push(declaration);let state={...unavailableDownshift(),profile:declaration.profile,available:true,error:null};
   return {status:()=>state,set:input=>{assert.equal(input.expectedGeneration,state.generation);mutations++;state={...state,enabled:input.enabled,phase:input.enabled?'on':'off',generation:state.generation+1};return state;},subscribe:callback=>{changed=callback;return()=>{unsubscribed++;};},release:()=>{releases++;}};
  }};
  return {native,declarations,get releases(){return releases;},get mutations(){return mutations;},get unsubscribed(){return unsubscribed;},changed:()=>changed()};
@@ -49,7 +49,7 @@ test('native subscription and handle release once; no mutations after disposal',
 });
 test('changing profiles requires OFF; stale switch requests cannot target a newly configured profile',async()=>{
  const n=nativeFixture(),h=host(n.native);await plugin(h.bb);const next={...config,profile:{...config.profile,model:'another-small-model'}};
- await h.handlers.economy_set!(operation());await assert.rejects(h.handlers.economy_configure!(next),/Turn Economy off/);assert.equal(n.releases,0);
+ await h.handlers.economy_set!(operation());await assert.rejects(h.handlers.economy_configure!(next),/Turn Downshift off/);assert.equal(n.releases,0);
  await h.handlers.economy_set!({...operation(),enabled:false,expectedGeneration:1});await h.handlers.economy_configure!(next);assert.equal(n.releases,1);
  await assert.rejects(h.handlers.economy_set!(operation()),/model selection changed/);assert.equal(n.mutations,2);
  assert.equal((await h.handlers.economy_set!(operation(next))).enabled,true);

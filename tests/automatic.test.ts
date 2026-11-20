@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {AutomaticEconomy, type AutomaticRecord, type ModeOperation, type ModeState, type QuotaSnapshot} from '../lib/automatic';
+import {AutomaticDownshift, type AutomaticRecord, type ModeOperation, type ModeState, type QuotaSnapshot} from '../lib/automatic';
 import {nativeQuota} from '../lib/quota';
 
 const now = 1_800_000_000_000;
@@ -15,7 +15,7 @@ function fixture() {
   const ports = {now: () => now, primaryModel: 'primary', policyId: 'original-policy', load: async () => structuredClone(saved),
     save: async (s: AutomaticRecord) => {if (writeFails) throw Error('disk'); saved = structuredClone(s);}, mode: () => mode,
     set: (input: ModeOperation) => {calls.push({...input}); if (fail) throw Error('uncertain'); mode = {...mode, enabled: true, generation: mode.generation + 1}; return mode;}};
-  return {ports, calls, create: () => new AutomaticEconomy(ports), mode: (value: Partial<ModeState>) => {mode = {...mode, ...value};},
+  return {ports, calls, create: () => new AutomaticDownshift(ports), mode: (value: Partial<ModeState>) => {mode = {...mode, ...value};},
     fail: (value: boolean) => {fail = value;}, writeFails: (value: boolean) => {writeFails = value;}, saved: () => saved,
     corrupt: () => {saved = {version: 99} as unknown as AutomaticRecord;}};
 }

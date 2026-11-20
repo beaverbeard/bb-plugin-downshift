@@ -1,14 +1,14 @@
 {
-  "name": "bb-plugin-economy",
-  "version": "0.1.0-rc.4",
+  "name": "bb-plugin-downshift",
+  "version": "0.1.0-rc.5",
   "type": "module",
   "engines": {
     "bb": ">=0.50.1",
     "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
-    "name": "Economy [Experimental]",
-    "description": "Choose your main and Economy models from BB\u2019s catalog. Requires the included companion native BB integration; stock BB is unsupported.",
+    "name": "Downshift [Experimental]",
+    "description": "Choose your main and Downshift models from BB’s catalog. Requires the included companion native BB integration; stock BB is unsupported.",
     "branding": {
       "icon": "./assets/battery.svg",
       "experimental_icons": {
@@ -54,18 +54,19 @@
     "react-dom": "19.3.1"
   },
   "license": "MIT",
-  "description": "Switch between original profiles and your chosen Economy model, with optional quota-based activation.",
+  "description": "Switch between original profiles and your chosen Downshift model, with optional quota-based activation.",
   "files": [
     "server.ts",
     "app.tsx",
     "control.tsx",
     "setup.tsx",
-    "economy.css",
+    "downshift.css",
     "lib/",
     "assets/",
     "skills/",
     "README.md",
     "PLUGIN_OVERVIEW.md",
+    "docs/screenshots/",
     "LICENSE",
     "compatibility/",
     "dist/app.js",
@@ -83,6 +84,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/beaverbeard/bb-plugin-economy.git"
+    "url": "https://github.com/beaverbeard/bb-plugin-downshift.git"
   }
 }

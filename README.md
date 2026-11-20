@@ -1,6 +1,6 @@
-![Economy switch smoothly changing from original profiles to Economy mode and back](docs/screenshots/economy-toggle.gif)
+![Downshift switch smoothly changing from original profiles to Downshift mode and back](docs/screenshots/downshift-toggle.gif)
 
-# Economy
+# Downshift
 
 A global model switch for BB, with the profiles you choose.
 
@@ -12,32 +12,32 @@ change execution; stock BB keeps the switch disabled.
 
 ## Screenshots
 
-**Economy on:** the turtle switch and orange theme make the active mode visible.
+**Downshift on:** the turtle switch and orange theme make the active mode visible.
 
-![Economy enabled in BB, with the orange switch and warm interface theme](docs/screenshots/economy-on.jpg)
+![Downshift enabled in BB, with the orange switch and warm interface theme](docs/screenshots/downshift-on.jpg)
 
-**Model setup:** choose your main and Economy models, reasoning and service tier.
+**Model setup:** choose your main and Downshift models, reasoning and service tier.
 
-![Economy model settings in BB with the neutral theme and mode switched off](docs/screenshots/models.jpg)
+![Downshift model settings in BB with the neutral theme and mode switched off](docs/screenshots/models.jpg)
 
 ## Choose your models
 
-Open **Settings → Plugins → Economy → Models**, or open the switch’s details.
+Open **Settings → Plugins → Downshift → Models**, or open the switch’s details.
 Choose your provider, answer **“What is your main model?”**, then choose a smaller
-Economy model. All choices come from BB’s current catalog on the primary machine.
+Downshift model. All choices come from BB’s current catalog on the primary machine.
 There is no preselected provider or hard-coded main model. The same model can
 also be selected with a different reasoning level or service tier. Any available BB
 provider can be selected when it supplies a confirmed model catalog. Models
 whose reasoning discovery is still unknown are not selectable.
 
-The Economy model stays with the same provider to preserve existing sessions.
+The Downshift model stays with the same provider to preserve existing sessions.
 You choose its reasoning and service tier; the tier starts at Default. BB does
 not rank model cost, so choose a model appropriate for your subscription and work.
 A provider whose catalog requires a workspace must first expose those models
 through BB’s primary-machine catalog; otherwise setup reports that no confirmed
 models are available. Target hosts still validate the profile independently.
 
-The main model identifies your usual workload and quota context. Turning Economy
+The main model identifies your usual workload and quota context. Turning Downshift
 OFF restores **each thread’s original profile**, including inherited model,
 reasoning, Fast, permission and source values. It does not replace every thread
 with the main model. Other providers keep their execution. Active calls finish
@@ -49,7 +49,7 @@ selection only after OFF restoration completes.
 Automatic activation is optional and offered on when Codex is selected during
 setup. It starts only after the user saves that selection. The verified adapter
 supports **Codex shared account windows on BB’s primary host**. Enable its checkbox
-to request Economy once when **any active window has 5% or less remaining**.
+to request Downshift once when **any active window has 5% or less remaining**.
 BB does not expose a separate mandatory model limit in this response; the plugin
 does not infer one or combine accounts across machines. Other providers retain
 manual switching until their quota semantics have a verified adapter.
@@ -65,7 +65,7 @@ Shared subscription exhaustion is still a hard limit.
 
 ## Control
 
-The icon switch slides between original profiles (rabbit) and Economy (turtle).
+The icon switch slides between original profiles (rabbit) and Downshift (turtle).
 Click, tap or swipe it; Space, Enter and arrow keys work from the keyboard.
 OFF follows the selected BB theme; ON has an orange track. The removable warm
 tint follows that same theme. Cached last-confirmed ON stays visibly unconfirmed
@@ -109,18 +109,23 @@ server code in BB.
 
 ## Install and remove
 
+Moving from the former Economy plugin? Follow the explicit
+[OFF → uninstall → install procedure](compatibility/UPGRADING-FROM-ECONOMY.md).
+The plugin ID changes to `downshift`; existing journals and settings are not
+automatically migrated. Legacy v1 RPC method names remain stable.
+
 After choosing the companion server explicitly:
 
 ```sh
 bb plugin install . --yes
-bb plugin rpc call economy economy_configuration --json
-bb plugin rpc call economy economy_state --json
-bb plugin disable economy
-bb plugin uninstall economy
+bb plugin rpc call downshift economy_configuration --json
+bb plugin rpc call downshift economy_state --json
+bb plugin disable downshift
+bb plugin uninstall downshift
 ```
 
 Configure models through the UI, then require `available:true`, no state error,
-and the profile you selected. Installing alone does not enable Economy; save your model selection first.
+and the profile you selected. Installing alone does not enable Downshift; save your model selection first.
 Removing the plugin removes its UI and palette attribute. Native provenance and
 restore readers remain in core. Never delete their journals or replace core with
 an older binary as an uninstall shortcut.

@@ -23,7 +23,7 @@ export interface AutomaticPorts {
 export type AutomaticView = {status: 'waiting' | 'stale' | 'enabled' | 'suppressed' | 'error'; message: string};
 
 /** Quota observation only. The native controller remains the sole execution owner. */
-export class AutomaticEconomy {
+export class AutomaticDownshift {
   view: AutomaticView = {status: 'waiting', message: 'Auto on at 5% remaining in any active Codex quota window.'};
   private record: AutomaticRecord | null = null;
   private queue: Promise<void> = Promise.resolve();
@@ -88,7 +88,7 @@ export class AutomaticEconomy {
         if (Object.keys(consumed).length > 64) throw Error('Automatic history requires review');
         const mode = await this.ports.mode();
         if (this.disposed) return;
-        if (!mode.available || mode.error) {this.view = {status: 'error', message: 'Auto waits for a healthy native Economy controller.'}; return;}
+        if (!mode.available || mode.error) {this.view = {status: 'error', message: 'Auto waits for a healthy native Downshift controller.'}; return;}
         if (this.record!.holdForFreshQuota) {
           const confirmed = confirmedQuota(usage, this.ports.primaryModel, now)!;
           const windows = Object.fromEntries(confirmed.windows.map(w => [`${confirmed.scope}:${confirmed.scope === 'model' ? confirmed.model : 'shared'}:${w.window_minutes}:${w.resets_at}`, w.resets_at * 1000]));
@@ -101,7 +101,7 @@ export class AutomaticEconomy {
         if (pending && (pending.policyId !== this.ports.policyId || mode.enabled || mode.generation !== pending.input.expectedGeneration)) {
           const next: AutomaticRecord = {version: 1, consumed: {...consumed, ...pending.keys}, pending: null};
           await this.ports.save(next); this.record = next;
-          this.view = mode.enabled ? {status: 'enabled', message: 'Economy is on. Automatic activation never turns it off.'}
+          this.view = mode.enabled ? {status: 'enabled', message: 'Downshift is on. Automatic activation never turns it off.'}
             : {status: 'suppressed', message: 'A newer manual change takes priority until quota resets.'};
           return;
         }
@@ -112,7 +112,7 @@ export class AutomaticEconomy {
           this.view = {status: 'waiting', message: 'Quota recovered; the previous automatic request was not repeated.'};
           return;
         }
-        if (mode.enabled) {this.view = {status: 'enabled', message: 'Economy is on. Automatic activation never turns it off.'}; return;}
+        if (mode.enabled) {this.view = {status: 'enabled', message: 'Downshift is on. Automatic activation never turns it off.'}; return;}
         const fresh = Object.fromEntries(Object.entries(low).filter(([key]) => !Object.hasOwn(consumed, key)));
         if (!pending && !Object.keys(fresh).length) {
           this.view = Object.keys(low).length ? {status: 'suppressed', message: 'This low quota window was already handled; waiting for reset.'}
@@ -126,7 +126,7 @@ export class AutomaticEconomy {
         if (!result.available || !result.enabled || result.error) throw Error('Activation not confirmed');
         const next: AutomaticRecord = {version: 1, consumed: {...consumed, ...operation.keys}, pending: null};
         await this.ports.save(next); this.record = next;
-        this.view = {status: 'enabled', message: 'Economy enabled automatically at 5% or less remaining. Shared quota still applies.'};
+        this.view = {status: 'enabled', message: 'Downshift enabled automatically at 5% or less remaining. Shared quota still applies.'};
       } catch {
         this.view = {status: 'error', message: 'Automatic activation is unconfirmed; the same operation will be checked again.'};
       }

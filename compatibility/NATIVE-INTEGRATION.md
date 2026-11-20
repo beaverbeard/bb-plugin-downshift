@@ -1,6 +1,6 @@
 # Native integration
 
-Economy requires a companion BB source build. **Stock BB is unsupported and
+Downshift requires a companion BB source build. **Stock BB is unsupported and
 keeps the control disabled.** The package includes a generic source patch for
 BB 0.50.1 at upstream commit `df9619d8e8aac4aff00c0c3ff9b8ef4e2823e4f2`, with SDK
 0.6.164. This integration has not shipped in upstream BB. Its exact revision,
@@ -14,12 +14,12 @@ Core owns effective execution, immutable original profiles, generation CAS,
 UUID deduplication, durable request provenance, native host catalog checks and
 restore readers. A plugin may register only model, reasoning level and service
 tier for one provider. It cannot change the provider, input, permissions or
-history. Economy registers the user-selected profile for one provider. Native catalogs
+history. Downshift registers the user-selected profile for one provider. Native catalogs
 validate reasoning and service tiers. A model without reasoning choices accepts
 only its known catalog default; no unsupported reasoning argument is sent.
 The same native catalog normalization applies when restoring a profile. Unknown
 discovery remains unavailable.
-Economy also requires the `consistent-durable-registry` semantic. An older
+Downshift also requires the `consistent-durable-registry` semantic. An older
 companion that lacks this recovery check is not compatible with this release.
 
 ## Build from the exact source
@@ -55,9 +55,9 @@ installation process; this package does not automate that deployment. For a new 
 instance, the companion launcher can start both server and primary daemon:
 
 ```sh
-BB_DATA_DIR="$PWD/.economy-evaluation" \
+BB_DATA_DIR="$PWD/.downshift-evaluation" \
 BB_SERVER_URL=http://127.0.0.1:38976 \
-node packages/bb-app/dist/bb-app.js --data-dir "$PWD/.economy-evaluation" \
+node packages/bb-app/dist/bb-app.js --data-dir "$PWD/.downshift-evaluation" \
   --server-bind-host 127.0.0.1 --server-port 38976 --host-daemon-port 38977 \
   --bundled --no-in-app-updates
 ```
@@ -82,14 +82,14 @@ After choosing the companion server explicitly, use its normal plugin install:
 
 ```sh
 env -u BB_CLI -u BB_THREAD_ID -u BB_PROJECT_ID -u BB_ENVIRONMENT_ID \
-  BB_DATA_DIR="$PWD/.economy-evaluation" BB_SERVER_URL=http://127.0.0.1:38976 \
-  node packages/bb-app/dist/bb.js plugin install /path/to/bb-plugin-economy --yes
+  BB_DATA_DIR="$PWD/.downshift-evaluation" BB_SERVER_URL=http://127.0.0.1:38976 \
+  node packages/bb-app/dist/bb.js plugin install /path/to/bb-plugin-downshift --yes
 env -u BB_CLI -u BB_THREAD_ID -u BB_PROJECT_ID -u BB_ENVIRONMENT_ID \
-  BB_DATA_DIR="$PWD/.economy-evaluation" BB_SERVER_URL=http://127.0.0.1:38976 \
-  node packages/bb-app/dist/bb.js plugin rpc call economy economy_state --json
+  BB_DATA_DIR="$PWD/.downshift-evaluation" BB_SERVER_URL=http://127.0.0.1:38976 \
+  node packages/bb-app/dist/bb.js plugin rpc call downshift economy_state --json
 ```
 
-Open Economy’s Models section and choose a main and Economy model from the
+Open Downshift’s Models section and choose a main and Downshift model from the
 current BB catalog. Setup does not enable the mode. Require `available:true`,
 no state error, and the exact profile you selected. On activation, every target
 host must confirm that profile through BB’s native catalog. Offline or unavailable hosts
@@ -111,7 +111,7 @@ cannot disable its replacement. A server shutdown suspends overlays without
 forgetting the selected mode; restart resumes it only after the owner loads.
 Without that owner, new overlays stay disabled and restore readers still run.
 
-Disabling or uninstalling Economy deactivates new overlays. Active work finishes
+Disabling or uninstalling Downshift deactivates new overlays. Active work finishes
 naturally, and later turns use the original native profile. Core keeps request
 provenance even after removal, including IDs written before a rolled-back event
 append. Do not delete `execution-policies/`, remove the compatibility reader,

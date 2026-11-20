@@ -32,5 +32,11 @@
   "changedSourceFiles": 43,
   "observedUpstreamHead": "614962554395048b0a0d47ea400f6a4a6eee27b2",
   "hostHandshake": "executionPolicyProtocol=bb.execution-policy/v1 required",
-  "requiredRegistrySemantic": "consistent-durable-registry"
+  "requiredRegistrySemantic": "consistent-durable-registry",
+  "brandingRelease": {
+    "plugin": "downshift",
+    "version": "0.1.0-rc.5",
+    "nativePatchUnchangedFrom": "0.1.0-rc.4",
+    "nativeValidation": "Retained exact reviewed rc.4 companion evidence; branding does not change the native contract."
+  }
 }

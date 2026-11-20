@@ -1,16 +1,16 @@
 import {defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi} from '@get-bb/plugin-sdk';
 import {z} from 'zod';
-import {AutomaticEconomy, type AutomaticRecord, type QuotaSnapshot, type ModeOperation} from './lib/automatic';
+import {AutomaticDownshift, type AutomaticRecord, type QuotaSnapshot, type ModeOperation} from './lib/automatic';
 import {nativeCapability, type NativeController} from './lib/native-contract';
 import {nativeQuota} from './lib/quota';
-import {economyStateSchema, economySetSchema, unavailableEconomy, type EconomyState} from './lib/state';
+import {downshiftStateSchema, downshiftSetSchema, unavailableDownshift, type DownshiftState} from './lib/state';
 import {catalogSchema,configurationSchema,checkSelection,type Catalog,type Configuration} from './lib/configuration';
 import {policyId} from './lib/policy-id';
 
 const setupSchema=z.object({nativeAvailable:z.boolean(),configuration:configurationSchema.nullable()});
 export const rpcContract=defineRpcContract({
- economy_state:{input:z.null(),output:economyStateSchema},
- economy_set:{input:economySetSchema,output:economyStateSchema},
+ economy_state:{input:z.null(),output:downshiftStateSchema},
+ economy_set:{input:downshiftSetSchema,output:downshiftStateSchema},
  economy_configuration:{input:z.null(),output:setupSchema},
  economy_catalog:{input:z.object({providerId:z.string().max(64).nullable()}),output:catalogSchema},
  economy_configure:{input:configurationSchema,output:setupSchema},
@@ -22,18 +22,18 @@ export default async function plugin(bb:BbPluginApi){
  const stored=await bb.storage.kv.get<unknown>('configuration-v1');
  const parsed=configurationSchema.safeParse(stored);
  let configuration:Configuration|null=parsed.success?parsed.data:null;
- let controller:NativeController|null=null,unsubscribe=()=>{},automatic:AutomaticEconomy|null=null;
- let configurationError=native?'Choose your main model and an Economy model in Economy settings.':missing;
+ let controller:NativeController|null=null,unsubscribe=()=>{},automatic:AutomaticDownshift|null=null;
+ let configurationError=native?'Choose your main model and a Downshift model in Downshift settings.':missing;
  let latestQuota:QuotaSnapshot|null=null,quotaSignal:AbortSignal|null=null,disposed=false,reconfiguring=false,epoch=0;
  let operations:Promise<unknown>=Promise.resolve();
  const serialize=<T,>(action:()=>Promise<T>):Promise<T>=>{const result=operations.then(action);operations=result.catch(()=>{});return result;};
  const publish=()=>{if(!disposed)bb.realtime.publish('economy-changed',null);};
- const status=():EconomyState=>{
-  if(!controller)return unavailableEconomy(configurationError);
-  try{return {...economyStateSchema.parse(controller.status()),configurationId:configuration?policyId(configuration):null};}
-  catch{return unavailableEconomy('The native controller returned an invalid state. No switch is allowed.');}
+ const status=():DownshiftState=>{
+  if(!controller)return unavailableDownshift(configurationError);
+  try{return {...downshiftStateSchema.parse(controller.status()),configurationId:configuration?policyId(configuration):null};}
+  catch{return unavailableDownshift('The native controller returned an invalid state. No switch is allowed.');}
  };
- const set=(input:ModeOperation):EconomyState=>{
+ const set=(input:ModeOperation):DownshiftState=>{
   if(!controller||disposed)throw new experimental_PluginRpcRefusal({code:'conflict',message:configurationError});
   try{controller.set(input);return status();}
   catch(error){if(error instanceof Error&&(error as Error&{code?:string}).code==='execution_policy_conflict')throw new experimental_PluginRpcRefusal({code:'conflict',message:error.message});throw error;}
@@ -46,13 +46,13 @@ export default async function plugin(bb:BbPluginApi){
    const handle=native.register({id,providerId:config.providerId,profile:config.profile});controller=handle;
    if(!handle||!['status','set','subscribe','release'].every(k=>typeof(handle as unknown as Record<string,unknown>)[k]==='function'))throw Error('Invalid native controller');
    unsubscribe=handle.subscribe(publish);
-   automatic=new AutomaticEconomy({
+   automatic=new AutomaticDownshift({
     load:async()=>(await bb.storage.kv.get<AutomaticRecord>(`automatic-v1:${config.providerId}`))??null,
     save:value=>bb.storage.kv.set(`automatic-v1:${config.providerId}`,value),
     mode:status,set:input=>{if(disposed||reconfiguring||!quotaSignal||quotaSignal.aborted||configuration!==config)throw Error('Configuration changed');return set(input);},
     primaryModel:config.primaryModel,policyId:id,
    });
-  }catch(error){configurationError=`Native Economy registration failed: ${error instanceof Error?error.message.slice(0,500):'Invalid controller response.'}`;release();}
+  }catch(error){configurationError=`Native Downshift registration failed: ${error instanceof Error?error.message.slice(0,500):'Invalid controller response.'}`;release();}
  };
  register();
  if(!native)bb.status.needsConfiguration(missing);
@@ -80,9 +80,9 @@ export default async function plugin(bb:BbPluginApi){
    if(!native||disposed)throw new experimental_PluginRpcRefusal({code:'conflict',message:missing});
    checkSelection(input,await catalog(input.providerId));
    return serialize(async()=>{
-    if(disposed)throw Error('Economy was unloaded.');
+    if(disposed)throw Error('Downshift was unloaded.');
     if(controller&&JSON.stringify(input)===JSON.stringify(configuration))return {nativeAvailable:true,configuration};
-    if(controller&&status().phase!=='off')throw new experimental_PluginRpcRefusal({code:'conflict',message:'Turn Economy off and wait for restoration before changing models.'});
+    if(controller&&status().phase!=='off')throw new experimental_PluginRpcRefusal({code:'conflict',message:'Turn Downshift off and wait for restoration before changing models.'});
     reconfiguring=true;
     try{
      await bb.storage.kv.set('configuration-v1',input);
@@ -96,9 +96,9 @@ export default async function plugin(bb:BbPluginApi){
   economy_set:async input=>{
    // Suppression must finish before entering the mutation queue used by auto ON.
    // A manual OFF therefore remains the final operation even if an auto request was already prepared.
-   if(!configuration||input.configurationId!==policyId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Economy before switching.'});
+   if(!configuration||input.configurationId!==policyId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});
    const current=automatic;if(!input.enabled&&current)await current.suppress(latestQuota);
-   return serialize(async()=>{if(!configuration||input.configurationId!==policyId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Economy before switching.'});const {configurationId,...operation}=input;const next=set(operation);publish();return next;});
+   return serialize(async()=>{if(!configuration||input.configurationId!==policyId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});const {configurationId,...operation}=input;const next=set(operation);publish();return next;});
   },
  });
  bb.background.service('quota',{

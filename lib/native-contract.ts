@@ -1,4 +1,4 @@
-import type {EconomyState} from './state';
+import type {DownshiftState} from './state';
 
 /** Companion native contract, NOT an API present in stock BB.
  * See compatibility/NATIVE-INTEGRATION.md and the included exact source patch.
@@ -10,8 +10,8 @@ export const requiredSemantics = [
   'safe-native-boundaries', 'native-host-catalog', 'restore-after-unload', 'catalog-profile-validation', 'native-host-handshake', 'consistent-durable-registry',
 ] as const;
 export interface NativeController {
-  status(): EconomyState;
-  set(input: {enabled: boolean; expectedGeneration: number; requestId: string}): EconomyState;
+  status(): DownshiftState;
+  set(input: {enabled: boolean; expectedGeneration: number; requestId: string}): DownshiftState;
   subscribe(changed: () => void): () => void;
   /** Native service deactivates the overlay safely; restore readers outlive this handle. */
   release(): void;
