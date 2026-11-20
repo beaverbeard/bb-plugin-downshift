@@ -96,6 +96,7 @@ def inventory(root):
             result.append({'path':str(p.relative_to(root)),'link':os.readlink(p)})
         elif p.is_file():result.append({'path':str(p.relative_to(root)),'sha256':sha(p),'bytes':p.stat().st_size})
     (root/'inventory.json').write_text(json.dumps(result,indent=2)+'\n')
+    (root/'inventory.json').chmod(0o644)
 
 def main():
     parser=argparse.ArgumentParser()
@@ -108,6 +109,7 @@ def main():
     root=a.out.resolve()
     if root.exists():raise ValueError('Output must be a new directory')
     root.mkdir(parents=True)
+    root.chmod(0o755)
     extract(a.bb_tar,root/'runtime/bb','package')
     shutil.copytree(a.deps_root,root/'runtime/bb/node_modules',symlinks=True)
     p=root/'runtime/bb/node_modules/.pnpm/node_modules/bb-app'
