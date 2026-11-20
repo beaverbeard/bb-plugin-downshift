@@ -88,6 +88,22 @@ listed package is executed or included in a compiled bundle. It preserves the
 available source dependency notices alongside the upstream built assets.
 ''')
 
+def normalize_debug_labels(root):
+    paths=['dist/bb.js','dist/bb-host-daemon.js','dist/index.js','dist/bb-app.js','dist/bb-server.js','server/dist/zod-runtime.js','server/dist/index.js','server/dist/start-server.js']
+    pattern=re.compile(r'bb-zod-locale-stub:[^\s"\']+/node_modules/zod/v4/locales/index\.js')
+    transforms=[]
+    for name in paths:
+        p=root/'runtime/bb'/name;source=p.read_text();matches=list(pattern.finditer(source))
+        if len(matches) not in [1,2]:raise ValueError('Unexpected synthetic label inventory')
+        for match in matches:
+            start=source.rfind('\n',0,match.start())+1;end=source.find('\n',match.end())
+            before=source[start:match.start()].strip();after=source[match.end():end].strip()
+            if (before,after) not in [('//',''),('"','"() {')]:raise ValueError('Label is not a generated comment/initializer name')
+        original=sha(p);p.write_text(pattern.sub('bb-zod-locale-stub:zod/v4/locales/index.js',source))
+        transforms.append({'file':'runtime/bb/'+name,'beforeSha256':original,'afterSha256':sha(p),'syntheticDebugLabels':len(matches)})
+    if sum(v['syntheticDebugLabels'] for v in transforms)!=10:raise ValueError('Unexpected label count')
+    return transforms
+
 def inventory(root):
     result=[]
     for p in sorted(root.rglob('*')):
@@ -128,7 +144,8 @@ def main():
     for name in ['downshift','downshift.mjs','assemble.py','README.md','BUILD.md','LICENSE']:shutil.copyfile(SOURCE/name,root/name)
     (root/'downshift').chmod(0o755)
     write_notices(root,a.build_packages)
-    manifest={'format':1,'id':ID,'carrier':{'name':'bb-downshift-companion','version':'0.50.1-ds.1','sourceCommit':a.carrier_commit,'experimental':True},'platform':{'os':'linux','arch':'x64','glibcMinimumElfRequirement':'2.34','glibcxxMinimumElfRequirement':'3.4.29','tested':'Ubuntu22.04.5/glibc2.35'},'bb':{'version':'0.50.1','sdkVersion':'0.6.164','repository':'https://github.com/get-bb/bb','baseCommit':'df9619d8e8aac4aff00c0c3ff9b8ef4e2823e4f2','reviewedTree':'ed4e544a27a63435166d6884a7b22f545032f2ef','reviewedNativeCommit':'55695f85550270494c90b31b3dbbc35254b99124','packageArchiveSha256':BB_SHA,'patchSha256':'f9b3e210bf37fb462f73979ba6d1e1db2fffcc837754a22448d6b822101b6522'},'nativeProtocol':273,'executionPolicyProtocol':'bb.execution-policy/v1','requiredSemantic':'consistent-durable-registry','node':{'version':'24.15.0','url':'https://nodejs.org/dist/v24.15.0/node-v24.15.0-linux-x64.tar.xz','archiveSha256':NODE_SHA,'binarySha256':sha(root/'runtime/node/bin/node')},'plugin':{'name':'bb-plugin-downshift','version':'0.1.0-rc.6','id':'downshift','source':'https://github.com/beaverbeard/bb-plugin-downshift.git#v0.1.0-rc.6','sourceCommit':'60ad01c92c12478d8bde60d6f857f47d64f52b19','archiveSha256':PLUGIN_SHA},'toolchain':{'esbuild':'0.28.2','@tailwindcss/node':'4.3.0','@tailwindcss/oxide':'4.3.0','tailwindcss':'4.3.0'},'productionDependencyDeployment':{'pnpm':'9.15.0','scripts':'ignored','source':'BB locked production deployment'},'validation':{'nativeTests':'retained exact reviewed source evidence; unchanged suites not repeated','realSubscribedModelCalls':0,'productionRollout':False,'otherPlatforms':'unvalidated'}}
+    transforms=normalize_debug_labels(root)
+    manifest={'format':1,'id':ID,'carrier':{'name':'bb-downshift-companion','version':'0.50.1-ds.1','sourceCommit':a.carrier_commit,'experimental':True},'platform':{'os':'linux','arch':'x64','glibcMinimumElfRequirement':'2.34','glibcxxMinimumElfRequirement':'3.4.29','tested':'Ubuntu22.04.5/glibc2.35'},'bb':{'version':'0.50.1','sdkVersion':'0.6.164','repository':'https://github.com/get-bb/bb','baseCommit':'df9619d8e8aac4aff00c0c3ff9b8ef4e2823e4f2','reviewedTree':'ed4e544a27a63435166d6884a7b22f545032f2ef','reviewedNativeCommit':'55695f85550270494c90b31b3dbbc35254b99124','packageArchiveSha256':BB_SHA,'patchSha256':'f9b3e210bf37fb462f73979ba6d1e1db2fffcc837754a22448d6b822101b6522'},'distributionTransforms':{'kind':'esbuild synthetic Zod namespace comments and initializer debug names only; no execution logic or source patch changes','files':transforms},'nativeProtocol':273,'executionPolicyProtocol':'bb.execution-policy/v1','requiredSemantic':'consistent-durable-registry','node':{'version':'24.15.0','url':'https://nodejs.org/dist/v24.15.0/node-v24.15.0-linux-x64.tar.xz','archiveSha256':NODE_SHA,'binarySha256':sha(root/'runtime/node/bin/node')},'plugin':{'name':'bb-plugin-downshift','version':'0.1.0-rc.6','id':'downshift','source':'https://github.com/beaverbeard/bb-plugin-downshift.git#v0.1.0-rc.6','sourceCommit':'60ad01c92c12478d8bde60d6f857f47d64f52b19','archiveSha256':PLUGIN_SHA},'toolchain':{'esbuild':'0.28.2','@tailwindcss/node':'4.3.0','@tailwindcss/oxide':'4.3.0','tailwindcss':'4.3.0'},'productionDependencyDeployment':{'pnpm':'9.15.0','scripts':'ignored','source':'BB locked production deployment'},'validation':{'nativeTests':'retained exact reviewed source evidence; unchanged suites not repeated','realSubscribedModelCalls':0,'productionRollout':False,'otherPlatforms':'unvalidated'}}
     (root/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     for p in root.rglob('*'):
         if p.is_dir() and not p.is_symlink():p.chmod(0o755)

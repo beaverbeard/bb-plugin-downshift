@@ -43,7 +43,12 @@ provider credentials, calls a model or uses an installed production BB runtime.
 plugin-build dependencies and rc.6 plugin in a new directory. It removes source
 maps and package-manager path metadata, fixes the pnpm self-reference to a
 relative link, verifies every remaining link stays within the carrier and
-retains licenses. The toolchain is resolved locally by BB's native resolver.
+retains licenses. For the exact checksum-pinned BB input it also normalizes
+10 synthetic esbuild Zod namespace labels in8 built files: source comments and
+initializer debug names only. Each occurrence must match its generated form;
+per-file before/after hashes are recorded in the manifest. This removes builder
+checkout labels without changing imports, execution logic or the native source
+patch. The toolchain is resolved locally by BB's native resolver.
 The plugin's only runtime dependency, Zod4.6.7, is included for native installation.
 
 Per-file inventory and a deterministic tarball are generated after assembly.
