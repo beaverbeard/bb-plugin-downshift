@@ -95,17 +95,6 @@ until the server responds. Warnings expose details when needed. All text is Engl
 There is no quota percentage widget. Quota is read internally for automatic
 activation; an independent quota display can be installed separately.
 
-## Linux x64 companion preview
-
-[Download the Linux x64 preview](https://github.com/beaverbeard/bb-plugin-downshift/releases/tag/companion-v0.50.1-ds.1).
-
-A ready Linux x64 distribution includes the reviewed native BB build, Node.js,
-production dependencies, the pinned plugin toolchain and Downshift rc.6. See the
-[companion preview guide](companion/README.md) for requirements and explicit startup
-with a new separate data directory. It is experimental and leaves the plugin
-unconfigured and OFF; existing-data production rollout remains operator-managed.
-The carrier has its own release and does not replace the immutable rc.6 plugin.
-
 ## Native installation and compatibility
 
 Follow [the companion build guide](compatibility/NATIVE-INTEGRATION.md). The
