@@ -97,6 +97,8 @@ activation; an independent quota display can be installed separately.
 
 ## Linux x64 companion preview
 
+[Download the Linux x64 preview](https://github.com/beaverbeard/bb-plugin-downshift/releases/tag/companion-v0.50.1-ds.1).
+
 A ready Linux x64 distribution includes the reviewed native BB build, Node.js,
 production dependencies, the pinned plugin toolchain and Downshift rc.6. See the
 [companion preview guide](companion/README.md) for requirements and explicit startup
