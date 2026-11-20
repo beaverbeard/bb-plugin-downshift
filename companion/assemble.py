@@ -45,7 +45,7 @@ def extract(archive, target, prefix, links=False):
 
 def packages(modules):
     found={}
-    for p in modules.rglob('package.json'):
+    for p in sorted(modules.rglob('package.json')):
         if p.is_symlink() or p.parent.is_symlink():continue
         try:
             data=json.loads(p.read_text());name=data['name'];version=data['version']
@@ -60,7 +60,7 @@ def write_notices(root,build_packages):
     for (name,version),(directory,data) in sorted(packages(build_packages).items()):
         stem=re.sub(r'[^a-zA-Z0-9._-]','_',name+'-'+version)
         license_paths=[]
-        for p in directory.rglob('*'):
+        for p in sorted(directory.rglob('*')):
             if p.is_symlink() or not p.is_file() or 'node_modules' in p.relative_to(directory).parts:continue
             if not re.match(r'^(licen[sc]e|copying|notice|copyright)([._-].*)?$',p.name,re.I):continue
             relative=p.relative_to(directory);target=destination/stem/relative;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,target)
