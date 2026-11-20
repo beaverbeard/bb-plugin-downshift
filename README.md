@@ -8,6 +8,16 @@ BB source revision in [NATIVE-INTEGRATION.md](compatibility/NATIVE-INTEGRATION.m
 This capability has not shipped upstream. Installing the UI alone does not
 change execution; stock BB keeps the switch disabled.
 
+## Screenshots
+
+**Economy on:** the turtle switch and orange theme make the active mode visible.
+
+![Economy enabled in BB, with the orange switch and warm interface theme](docs/screenshots/economy-on.jpg)
+
+**Model setup:** choose your main and Economy models, reasoning and service tier.
+
+![Economy model settings in BB with the neutral theme and mode switched off](docs/screenshots/models.jpg)
+
 ## Choose your models
 
 Open **Settings → Plugins → Economy → Models**, or open the switch’s details.
