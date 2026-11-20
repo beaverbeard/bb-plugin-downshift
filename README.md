@@ -159,7 +159,7 @@ fields; durable source/window identities are hashes, never raw account keys. Mar
 and scripted bridge tests are identified separately from real subscribed model
 calls; no real model continuation is claimed without that evidence.
 
-MIT. Navigation uses Phosphor Fill 2.1.1. The user-selected rabbit and turtle
-control silhouettes use Material Design Icons under Apache-2.0. Artwork,
+MIT. The turtle branding and rabbit/turtle control silhouettes use Material
+Design Icons under Apache-2.0. Artwork,
 provenance and licenses are in `assets/`. The upstream BB license accompanies
 the source patch under `compatibility/`.

@@ -10,9 +10,9 @@
     "name": "Downshift [Experimental]",
     "description": "Choose your main and Downshift models from BB’s catalog. Requires the included companion native BB integration; stock BB is unsupported.",
     "branding": {
-      "icon": "./assets/battery.svg",
+      "icon": "./assets/turtle.svg",
       "experimental_icons": {
-        "navigation": "./assets/battery.svg"
+        "navigation": "./assets/turtle.svg"
       }
     },
     "server": "./server.ts",

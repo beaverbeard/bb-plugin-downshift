@@ -1,8 +1,5 @@
 # Third-party notices
 
-The SVG battery icon is Phosphor Fill 2.1.1, MIT. Its source revision and SHA
-are in assets/provenance.json; the complete license is assets/PHOSPHOR-LICENSE.txt.
-
 Zod is MIT, copyright Colin McDonnell. Builds may bundle its runtime. The
 complete license is assets/ZOD-LICENSE.txt.
 
@@ -16,10 +13,10 @@ JavaScript and metadata are included and are checked separately.
 The native BB source integration is a patch to get-bb/bb, MIT. The full upstream
 license is compatibility/BB-LICENSE.txt. No installed BB runtime is bundled.
 
-## Control symbols
+## Branding and control symbols
 
-The rabbit and turtle use Material Design Icons’ `rabbit` and `tortoise` under
+The turtle branding and rabbit/turtle controls use Material Design Icons’
+`rabbit` and `tortoise` under
 Apache-2.0. The upstream license notice and full Apache license are included in
 `assets/MATERIAL-DESIGN-LICENSE.txt` and `assets/APACHE-2.0.txt`. Exact source
-revisions and hashes are in `assets/provenance.json`. Navigation branding
-remains Phosphor Fill under MIT.
+revisions and hashes are in `assets/provenance.json`.
