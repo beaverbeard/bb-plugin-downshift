@@ -84,6 +84,13 @@ async function run(entry,argv,o){
 async function readJson(o,route){const r=await fetch(o.url+route,{signal:AbortSignal.timeout(3000),headers:{connection:'close'}});if(!r.ok)throw Error('Companion readiness read failed: '+r.status);return r.json();}
 async function owned(o){const c=await readJson(o,'/api/v1/system/config');if(path.resolve(c.dataDir)!==o.data)throw Error('Server data directory does not match');}
 async function free(port){await new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(port,'127.0.0.1',()=>s.close(resolve));});}
+async function stopOwned(o){
+ marker(o);const file=path.join(o.data,'bb-app-runtime.json');
+ if(!fs.existsSync(file)){console.log('No companion launcher recorded.');return;}
+ const runtime=JSON.parse(fs.readFileSync(file,'utf8'));
+ if(runtime.entryPath!==path.join(bb,'dist/bb-app.js'))throw Error('Recorded runtime is not this companion; it was left alone');
+ process.stdout.write(await run('bb-app.js',['stop','--data-dir',o.data],o));
+}
 async function start(o){
  if(o.rest.length)throw Error('Unexpected trailing start arguments');verify();await free(o.port);await free(o.hostPort);const m=marker(o,true);
  const managed=path.join(o.data,'companion-plugin');
@@ -122,5 +129,5 @@ async function start(o){
 try{
  if(command==='help'||command==='--help'||command==='-h')console.log(help);
  else if(command==='verify'){if(args.length)throw Error('verify takes no arguments');verify();}
- else {const o=options();if(command==='start')await start(o);else if(command==='cli'){marker(o);await owned(o);process.stdout.write(await run('bb.js',o.rest,o));}else if(command==='stop'){marker(o);process.stdout.write(await run('bb-app.js',['stop','--data-dir',o.data],o));}else throw Error('Unknown command '+command);}
+ else {const o=options();if(command==='start')await start(o);else if(command==='cli'){marker(o);await owned(o);process.stdout.write(await run('bb.js',o.rest,o));}else if(command==='stop')await stopOwned(o);else throw Error('Unknown command '+command);}
 }catch(e){console.error(e instanceof Error?e.message:String(e));process.exitCode=1;}
