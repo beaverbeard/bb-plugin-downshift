@@ -2,7 +2,9 @@
 
 # Downshift
 
-A global model switch for BB, with the profiles you choose.
+Switch BB threads between model profiles you choose. Downshift supports the
+models and providers available in BB with a confirmed native catalog. Choose
+both your main and Downshift profiles within the same provider.
 
 **Experimental: requires a companion BB source build. Stock BB is unsupported.**
 The package includes an implemented, reviewable native integration for the exact
