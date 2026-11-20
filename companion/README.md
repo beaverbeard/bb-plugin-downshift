@@ -53,7 +53,8 @@ BB Connect setup. The launcher performs no account login or service installation
 This is an isolated evaluation distribution. Existing nonempty BB data directories
 are refused. Existing BB services and installed runtimes are untouched. Moving or
 upgrading an instance with existing data requires an operator-reviewed migration;
-the first preview binds its marker to this exact distribution path and build.
+the first preview binds its marker to this exact data path, distribution path
+and build. Copied data markers do not authorize stopping another instance.
 
 The installed plugin source is copied into the new instance's data directory;
 native BB may rebuild its artifacts using the included pinned toolchain. The
