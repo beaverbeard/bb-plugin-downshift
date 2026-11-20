@@ -1,3 +1,5 @@
+![Economy switch smoothly changing from original profiles to Economy mode and back](docs/screenshots/economy-toggle.gif)
+
 # Economy
 
 A global model switch for BB, with the profiles you choose.
