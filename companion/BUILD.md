@@ -12,9 +12,26 @@ To rebuild BB, follow `plugin/compatibility/NATIVE-INTEGRATION.md`: check out BB
 validation, rather than a public branch to check out. Normal compiler/minifier
 output can differ; compare source identity and the resulting artifact checksums.
 
-Run the assembly script from the carrier repository root with explicit inputs:
+The exact runtime/carrier source commit is
+`6d8116ecce724ad9533b6c808afa351d24436bf8`, recorded in
+`manifest.json` and targeted by `companion-v0.50.1-ds.1`. Check out that
+commit rather than the repository's current HEAD, which may include later
+documentation changes. From the repository root, enter `companion/` before
+running its assembly script:
 
 ```sh
+git checkout --detach 6d8116ecce724ad9533b6c808afa351d24436bf8
+cd companion
+```
+
+This release's corrected `BUILD.md` is a documentation-only follow-up to that
+runtime commit. For byte-for-byte reproduction of the corrected release, copy
+this file from the extracted release into the checkout before assembly. The
+other five carrier source files remain byte-exact at the commit above. The
+inventory records this documentation file's checksum separately.
+
+```sh
+cp /absolute/extracted-companion/BUILD.md ./BUILD.md
 python3 assemble.py \
   --bb-tar /absolute/bb-app-0.50.1.tgz \
   --deps-root /absolute/deployed-bb-app/node_modules \
@@ -22,7 +39,7 @@ python3 assemble.py \
   --toolchain-root /absolute/pinned-plugin-toolchain \
   --plugin-tar /absolute/bb-plugin-downshift-0.1.0-rc.6.tgz \
   --build-packages /absolute/bb/node_modules/.pnpm \
-  --carrier-commit "$(git rev-parse HEAD)" \
+  --carrier-commit 6d8116ecce724ad9533b6c808afa351d24436bf8 \
   --out /absolute/new-companion-directory
 ```
 
