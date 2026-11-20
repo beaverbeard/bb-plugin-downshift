@@ -81,7 +81,8 @@ async function run(entry,argv,o){
  p.stdout.on('data',v=>append('out',v));p.stderr.on('data',v=>append('err',v));
  const code=await new Promise((resolve,reject)=>{p.once('error',reject);p.once('exit',resolve);});if(overflow)throw Error('Companion command output exceeded 16 MiB');if(code!==0)throw Error('Companion command failed ('+code+'): '+stderr.slice(-3000));return stdout;
 }
-async function owned(o){const r=await fetch(o.url+'/api/v1/system/config',{signal:AbortSignal.timeout(3000)});if(!r.ok)throw Error('Cannot confirm this instance');const c=await r.json();if(path.resolve(c.dataDir)!==o.data)throw Error('Server data directory does not match');}
+async function readJson(o,route){const r=await fetch(o.url+route,{signal:AbortSignal.timeout(3000),headers:{connection:'close'}});if(!r.ok)throw Error('Companion readiness read failed: '+r.status);return r.json();}
+async function owned(o){const c=await readJson(o,'/api/v1/system/config');if(path.resolve(c.dataDir)!==o.data)throw Error('Server data directory does not match');}
 async function free(port){await new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(port,'127.0.0.1',()=>s.close(resolve));});}
 async function start(o){
  if(o.rest.length)throw Error('Unexpected trailing start arguments');verify();await free(o.port);await free(o.hostPort);const m=marker(o,true);
@@ -97,10 +98,23 @@ async function start(o){
   const end=Date.now()+60000;let ready=false;
   while(Date.now()<end&&!exited&&!stopping){try{await owned(o);ready=true;break;}catch{}await new Promise(r=>setTimeout(r,250));}
   if(stopping){await done;return;}if(!ready)throw Error('Companion did not become ready');
-  const list=JSON.parse(await run('bb.js',['plugin','list','--json'],o)),plugins=Array.isArray(list)?list:list.plugins,installed=plugins.find(p=>p.id==='downshift');
-  if(!installed&&!m.pluginInstalled){await run('bb.js',['plugin','install',managed,'--yes','--json'],o);m.pluginInstalled=true;saveMarker(o,m);}
-  else if(installed){if(installed.rootDir!==managed||(installed.enabled&&installed.status!=='running'))throw Error('Unexpected Downshift installation; inspect it before continuing');if(!m.pluginInstalled){m.pluginInstalled=true;saveMarker(o,m);}}
-  else console.log('Downshift remains uninstalled as requested; no automatic reinstall.');
+  const first=await readJson(o,'/api/v1/plugins'),installed=first.plugins.find(p=>p.id==='downshift');
+  const expectedPresent=!!installed||!m.pluginInstalled;
+  if(installed&&installed.rootDir!==managed)throw Error('Unexpected Downshift source; inspect it before continuing');
+  if(!installed&&!m.pluginInstalled)await run('bb.js',['plugin','install',managed,'--yes','--json'],o);
+  const deadline=Date.now()+45000;let healthy=false;
+  while(Date.now()<deadline&&!exited&&!stopping){
+   const list=await readJson(o,'/api/v1/plugins'),plugin=list.plugins.find(p=>p.id==='downshift');
+   if(plugin&&plugin.rootDir!==managed)throw Error('Unexpected Downshift source');
+   if(plugin?.status==='error')throw Error('Downshift failed to load: '+String(plugin.statusDetail??'Unknown plugin error').slice(0,500));
+   const pluginReady=expectedPresent?plugin&&(plugin.status==='running'||!plugin.enabled):!plugin;
+   const hosts=await readJson(o,'/api/v1/hosts');
+   if(pluginReady&&hosts.some(h=>h.status==='connected'&&h.lastRejectedProtocolVersion===null)){healthy=true;break;}
+   await new Promise(r=>setTimeout(r,250));
+  }
+  if(stopping){await done;return;}if(!healthy)throw Error('Plugin and primary daemon did not become ready');
+  if(expectedPresent&&!m.pluginInstalled){m.pluginInstalled=true;saveMarker(o,m);}
+  if(!expectedPresent)console.log('Downshift remains uninstalled as requested; no automatic reinstall.');
   console.log('Downshift companion ready: '+o.url+' · Settings → Plugins → Downshift');
   process.exitCode=await done;
  }catch(e){stop();await done;throw e;}finally{process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop);}

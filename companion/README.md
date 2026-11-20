@@ -25,7 +25,8 @@ See the included plugin's `compatibility/QUOTA-SOURCES.md` for account/connectio
 scope, shared windows and manual-off suppression.
 
 The first start uses a new separate data directory, installs the included plugin
-there and leaves it unconfigured. BB, Node.js, package managers and a compiler do
+there and leaves it unconfigured. The ready message waits for the plugin and
+primary daemon to finish native startup. BB, Node.js, package managers and a compiler do
 not need to be installed separately. Initial server/plugin startup works offline.
 Model discovery, account login and model use require your own supported provider
 and subscription/credentials. This archive contains no accounts or user data.
