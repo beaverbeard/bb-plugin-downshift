@@ -48,22 +48,41 @@ selection only after OFF restoration completes.
 
 ## Automatic activation
 
-Automatic activation is optional and offered on when Codex is selected during
-setup. It starts only after the user saves that selection. The verified adapter
-supports **Codex shared account windows on BB’s primary host**. Enable its checkbox
-to request Downshift once when **any active window has 5% or less remaining**.
-BB does not expose a separate mandatory model limit in this response; the plugin
-does not infer one or combine accounts across machines. Other providers retain
-manual switching until their quota semantics have a verified adapter.
+Automatic activation is optional for any selected provider that exposes quota
+through BB. After saving your model selection, enable its checkbox to request
+Downshift when **any applicable window has 5% or less remaining**. The observer
+uses the primary machine's native `provider.usage` source through BB's SDK.
+It considers exact main-model limits, Claude's explicit native model-family
+metadata, and real shared-provider windows. A low limit for another model alone
+does not trigger your main model. Accounts and machines are not added together.
 
-There is no automatic OFF. Manual OFF suppresses the current window until its
-reset. If quota is unknown when OFF is pressed, a durable barrier suppresses the
-first fresh windows instead of immediately undoing the choice. Unknown, expired,
-malformed or stale readings never activate the mode. An observer reads BB’s
-native usage API every 30 seconds without starting a model or calling a separate
-account API. Uncertain requests retain their UUID and CAS generation across
-reload; a changed profile cannot inherit a pending activation for the old one.
-Shared subscription exhaustion is still a hard limit.
+There is no automatic OFF. With a reset date, manual OFF holds until that
+window resets. Without a reset date, it holds until a fresh reading confirms
+recovery above 5%; a later low episode can activate again. Indistinguishable
+undated windows retain their separate readings but share a conservative decision
+group: any-low triggers, and manual OFF requires all original group members to
+recover. A missing member, unknown/error response or label/order change cannot
+remove this barrier. OFF during unknown quota durably binds the first confirmed
+windows. Existing v1 automatic records migrate conservatively; native identity
+and restoration journals stay unchanged.
+
+If the provider supplies an issuer account key, decisions are account-scoped.
+Otherwise decisions are explicitly **connection-scoped** to the selected provider
+and primary machine. An uncertain connection-scoped request is never replayed;
+a new fresh decision gets a new UUID and CAS check. Every automatic activation
+requires another fresh quota reading after its durable preparation. Connection
+scope cannot prove an unreported account change, so manual suppression stays
+conservative across account metadata changes. No email, token or invented account
+identity is used. [Quota sources and guarantees](compatibility/QUOTA-SOURCES.md)
+explain this distinction.
+
+Unknown, expired, unlimited-only, malformed or stale data never activate the
+mode. A provider with no usage capability needs a native provider quota source;
+context tokens, guessed budgets and spending without a known limit are not
+substitutes. The observer checks every 30 seconds, without starting a model or
+calling a separate account API. Shared subscription exhaustion is still a hard
+limit. Model/provider changes, disposal and in-flight manual OFF cancel old
+activation work. No real subscribed model call is claimed by the fixture tests.
 
 ## Control
 
@@ -136,7 +155,7 @@ an older binary as an uninstall shortcut.
 
 The package ships no account data, thread history, database, configuration or
 credentials. Quota normalization discards account email, plan and unrelated
-fields. Marketplace captures use a separate empty BB instance. Native transport
+fields; durable source/window identities are hashes, never raw account keys. Marketplace captures use a separate empty BB instance. Native transport
 and scripted bridge tests are identified separately from real subscribed model
 calls; no real model continuation is claimed without that evidence.
 

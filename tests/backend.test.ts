@@ -6,7 +6,7 @@ import plugin from '../server';
 import {nativeProtocol,requiredSemantics,type NativeExecutionPolicies} from '../lib/native-contract';
 import {unavailableDownshift} from '../lib/state';
 import type {Configuration} from '../lib/configuration';
-import {policyId} from '../lib/policy-id';
+import {policyId,configurationId} from '../lib/policy-id';
 
 export const config:Configuration={version:1,providerId:'other-provider',primaryModel:'main-model',profile:{model:'small-model',reasoningLevel:'default',serviceTier:'default'},autoEnabled:false};
 function host(capability?:unknown,initial:Configuration|null=config){
@@ -16,7 +16,7 @@ function host(capability?:unknown,initial:Configuration|null=config){
  const bb={experimental_executionPolicies:capability,status:{needsConfiguration:(message:string)=>notices.push(message)},storage:{kv:{get:async(key:string)=>storage.get(key),set:async(key:string,value:unknown)=>{storage.set(key,value);}}},rpc:{register:(_contract:unknown,value:typeof handlers)=>Object.assign(handlers,value)},realtime:{publish:(channel:string)=>signals.push(channel)},background:{service:(id:string)=>services.push(id)},onDispose:(callback:()=>void|Promise<void>)=>cleanup.push(callback),sdk:{providers:{list:async()=>[{id:'other-provider',displayName:'Other Provider',available:true,maintenance:{usage:true}}],models:async()=>({models:[model('main-model'),model('small-model'),model('another-small-model')],modelLoadError:null})}}};
  return {bb:bb as unknown as BbPluginApi,handlers,services,notices,signals,cleanup,storage};
 }
-const operation=(configuration:Configuration=config)=>({enabled:true,expectedGeneration:0,requestId:'5072ce12-1ad6-4b1d-942c-e106ee17747a',configurationId:policyId(configuration)});
+const operation=(configuration:Configuration=config)=>({enabled:true,expectedGeneration:0,requestId:'5072ce12-1ad6-4b1d-942c-e106ee17747a',configurationId:configurationId(configuration)});
 function nativeFixture(){
  let releases=0,unsubscribed=0,mutations=0,changed=()=>{};
  const declarations:any[]=[];
@@ -36,10 +36,10 @@ test('first install has no implied model; selection uses any available provider 
  const n=nativeFixture(),h=host(n.native,null);await plugin(h.bb);
  assert.equal(n.declarations.length,0);assert.equal(h.handlers.economy_configuration!().configuration,null);
  assert.equal(h.handlers.economy_state!().profile,null);await assert.rejects(h.handlers.economy_set!(operation()));
- const catalog=await h.handlers.economy_catalog!({providerId:'other-provider'});assert.equal(catalog.models.length,3);assert.equal(catalog.providers[0].usageSupported,false);
+ const catalog=await h.handlers.economy_catalog!({providerId:'other-provider'});assert.equal(catalog.models.length,3);assert.equal(catalog.providers[0].usageSupported,true);
  await h.handlers.economy_configure!(config);assert.deepEqual(n.declarations[0],{id:policyId(config),providerId:config.providerId,profile:config.profile});
  assert.deepEqual(h.storage.get('configuration-v1'),config);
- const restarted=host(nativeFixture().native,h.storage.get('configuration-v1') as Configuration);await plugin(restarted.bb);assert.equal(restarted.handlers.economy_state!().configurationId,policyId(config));
+ const restarted=host(nativeFixture().native,h.storage.get('configuration-v1') as Configuration);await plugin(restarted.bb);assert.equal(restarted.handlers.economy_state!().configurationId,configurationId(config));
 });
 test('native subscription and handle release once; no mutations after disposal',async()=>{
  const n=nativeFixture(),h=host(n.native);await plugin(h.bb);n.changed();assert.equal(h.signals.length,1);
@@ -56,7 +56,7 @@ test('changing profiles requires OFF; stale switch requests cannot target a newl
 });
 test('forged models, reasoning, service tiers and unsupported automatic quotas fail before configuration writes',async()=>{
  const n=nativeFixture(),h=host(n.native,null);await plugin(h.bb);
- for(const bad of [{...config,primaryModel:'unknown'},{...config,profile:{...config.profile,model:'unknown'}},{...config,profile:{...config.profile,reasoningLevel:'invented'}},{...config,profile:{...config.profile,serviceTier:'fast'}},{...config,autoEnabled:true}])await assert.rejects(h.handlers.economy_configure!(bad));
+ for(const bad of [{...config,primaryModel:'unknown'},{...config,profile:{...config.profile,model:'unknown'}},{...config,profile:{...config.profile,reasoningLevel:'invented'}},{...config,profile:{...config.profile,serviceTier:'fast'}}])await assert.rejects(h.handlers.economy_configure!(bad));
  assert.equal(n.declarations.length,0);assert.equal(h.storage.has('configuration-v1'),false);
 });
 test('failed native subscription releases the handle and preserves the registration error',async()=>{

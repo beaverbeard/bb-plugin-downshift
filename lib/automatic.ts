@@ -1,34 +1,47 @@
-import {randomUUID} from 'node:crypto';
-import {confirmedQuota, type QuotaSnapshot} from './quota-snapshot';
+import {createHash, randomUUID} from 'node:crypto';
+import {z} from 'zod';
+import {confirmedQuota, type QuotaSnapshot, type QuotaWindow} from './quota-snapshot';
 export type {QuotaSnapshot} from './quota-snapshot';
 export interface ModeState {available: boolean; enabled: boolean; generation: number; error: string | null}
 export interface ModeOperation {enabled: boolean; expectedGeneration: number; requestId: string}
-export interface AutomaticRecord {
-  version: 1;
-  consumed: Record<string, number>;
-  pending: {input: ModeOperation; keys: Record<string, number>; policyId?: string} | null;
-  /** Manual OFF with unknown quota binds the first confirmed windows after recovery. */
-  holdForFreshQuota?: boolean;
-}
+const keysSchema = z.record(z.string().regex(/^[a-f0-9]{64}$/), z.number().finite().positive().nullable());
+const inputSchema = z.object({enabled: z.literal(true), expectedGeneration: z.number().int().nonnegative(), requestId: z.uuid()}).strict();
+const recordSchema = z.object({version: z.literal(2), consumed: keysSchema,
+  pending: z.object({input: inputSchema, keys: keysSchema, policyId: z.string().min(1).max(100), sourceId: z.string().regex(/^[a-f0-9]{64}$/), sourceScope: z.enum(['account','connection'])}).strict().nullable(),
+  holdForFreshQuota: z.boolean(), recoveryCounts:z.record(z.string().regex(/^[a-f0-9]{64}$/),z.number().int().positive().max(64)).optional()}).strict();
+const legacySchema = z.object({version: z.literal(1), consumed: z.record(z.string().min(1), z.number().finite()),
+  pending: z.object({input: inputSchema, keys: z.record(z.string().min(1), z.number().finite()), policyId: z.string().min(1).max(64).optional()}).strict().nullable(),
+  holdForFreshQuota: z.boolean().optional()}).strict();
+export type AutomaticRecord = z.infer<typeof recordSchema>;
 export interface AutomaticPorts {
-  load(): Promise<AutomaticRecord | null>;
+  load(): Promise<unknown>;
   save(value: AutomaticRecord): Promise<void>;
   mode(): ModeState | Promise<ModeState>;
+  confirm?(usage: QuotaSnapshot): Promise<QuotaSnapshot | null>;
   set(input: ModeOperation): ModeState | Promise<ModeState>;
+  providerId: string;
   primaryModel: string;
-  policyId?: string;
+  policyId: string;
+  thresholdPercent?: number;
   now?: () => number;
   uuid?: () => string;
 }
 export type AutomaticView = {status: 'waiting' | 'stale' | 'enabled' | 'suppressed' | 'error'; message: string};
 
-/** Quota observation only. The native controller remains the sole execution owner. */
+/** The source observer never writes thread options; native execution owns the switch. */
 export class AutomaticDownshift {
-  view: AutomaticView = {status: 'waiting', message: 'Auto on at 5% remaining in any active Codex quota window.'};
+  view: AutomaticView;
   private record: AutomaticRecord | null = null;
   private queue: Promise<void> = Promise.resolve();
   private disposed = false;
-  constructor(private ports: AutomaticPorts) {}
+  private threshold: number;
+  private recoveryCounts:Record<string,number>={};
+  constructor(private ports: AutomaticPorts) {
+    this.threshold = ports.thresholdPercent ?? 5;
+    if (!Number.isFinite(this.threshold) || this.threshold < 0 || this.threshold >= 100) throw Error('Invalid automatic threshold');
+    this.view = this.waiting();
+  }
+  private waiting(): AutomaticView {return {status: 'waiting', message: `Auto on at ${this.threshold}% remaining in the selected provider’s applicable quota.`};}
   dispose() {this.disposed = true;}
   settled() {return this.queue;}
   private serialize(action: () => Promise<void>): Promise<void> {
@@ -39,97 +52,126 @@ export class AutomaticDownshift {
   private async load() {
     if (this.record) return;
     const saved = await this.ports.load();
-    // An unreadable record is an error, never permission to repeat a prior switch.
-    if (saved && (saved.version !== 1 || (saved.holdForFreshQuota !== undefined && typeof saved.holdForFreshQuota !== 'boolean') || !saved.consumed || typeof saved.consumed !== 'object' || Array.isArray(saved.consumed)
-      || Object.entries(saved.consumed).some(([key, expiry]) => !key || !Number.isFinite(expiry))
-      || (saved.pending !== null && (!saved.pending || !saved.pending.input || saved.pending.input.enabled !== true
-        || !Number.isSafeInteger(saved.pending.input.expectedGeneration) || saved.pending.input.expectedGeneration < 0
-        || !/^[0-9a-f-]{36}$/i.test(saved.pending.input.requestId)
-        || (saved.pending.policyId !== undefined && (typeof saved.pending.policyId !== 'string' || !saved.pending.policyId || saved.pending.policyId.length > 64))
-        || !saved.pending.keys || typeof saved.pending.keys !== 'object' || Array.isArray(saved.pending.keys)
-        || Object.entries(saved.pending.keys).some(([key, expiry]) => !key || !Number.isFinite(expiry)))))) {
-      throw Error('Invalid automatic activation record');
-    }
-    this.record = saved ?? {version: 1, consumed: {}, pending: null};
-  }
-  private lowWindows(usage: QuotaSnapshot | null): Record<string, number> | null {
+    if (saved == null) {this.record = {version: 2, consumed: {}, pending: null, holdForFreshQuota: false}; return;}
+    const parsed = recordSchema.safeParse(saved);
+    if (parsed.success) {this.record = parsed.data;this.recoveryCounts=parsed.data.recoveryCounts??{}; return;}
+    const legacy = legacySchema.parse(saved);
     const now = (this.ports.now ?? Date.now)();
-    const valid = confirmedQuota(usage, this.ports.primaryModel, now);
-    if (!valid) return null;
-    const keys: Record<string, number> = {};
-    for (const w of valid.windows) {
-      if (w.remaining_percent <= 5) keys[`${valid.scope}:${valid.scope === 'model' ? valid.model : 'shared'}:${w.window_minutes}:${w.resets_at}`] = w.resets_at * 1000;
-    }
-    return keys;
+    const hold = !!legacy.holdForFreshQuota || !!legacy.pending || Object.values(legacy.consumed).some(expiry => expiry > now);
+    const next: AutomaticRecord = {version: 2, consumed: {}, pending: null, holdForFreshQuota: hold};
+    await this.save(next); this.record = next;
   }
-  /** Call before a manual OFF; low windows stay suppressed until their own reset. */
+  private valid(usage: QuotaSnapshot | null) {return confirmedQuota(usage, this.ports, (this.ports.now ?? Date.now)());}
+  private key(usage: QuotaSnapshot, w: QuotaWindow, connection = false, group = false) {
+    return createHash('sha256').update(JSON.stringify([connection ? usage.connectionId : usage.sourceId, w.scope, w.model, group ? ['manual-class', w.classId] : w.id])).digest('hex');
+  }
+  private suppression(usage: QuotaSnapshot): AutomaticRecord['consumed'] {
+    const result:AutomaticRecord['consumed']={};
+    for(const w of usage.windows){
+      result[this.key(usage,w)]=w.resetsAt;result[this.key(usage,w,true)]=w.resetsAt;
+      const members=usage.windows.filter(other=>other.classId===w.classId);
+      const expiry=members.some(other=>other.resetsAt===null)?null:Math.min(...members.map(other=>other.resetsAt!));
+      for(const connection of [false,true]){
+        const key=this.key(usage,w,connection,true);result[key]=expiry;
+        if(expiry===null)this.recoveryCounts[key]=Math.max(this.recoveryCounts[key]??0,members.length);
+      }
+    }
+    return result;
+  }
+  private async save(next:AutomaticRecord){
+    const counts=Object.fromEntries(Object.entries(this.recoveryCounts).filter(([key])=>next.consumed[key]===null));
+    next.recoveryCounts=counts;await this.ports.save(next);this.recoveryCounts=counts;
+  }
+  private blocked(usage: QuotaSnapshot, w: QuotaWindow, consumed: AutomaticRecord['consumed']) {
+    return [this.key(usage,w),this.key(usage,w,true),this.key(usage,w,false,true),this.key(usage,w,true,true)].some(key=>Object.hasOwn(consumed,key));
+  }
+  private keys(usage: QuotaSnapshot, lowOnly = false): AutomaticRecord['consumed'] {
+    return Object.fromEntries(usage.windows.filter(w => !lowOnly || w.remainingPercent <= this.threshold).map(w => [this.key(usage, w), w.resetsAt]));
+  }
   suppress(usage: QuotaSnapshot | null): Promise<void> {
     return this.serialize(async () => {
       if (this.disposed) return;
-      await this.load();
-      if (this.disposed) return;
-      const keys = this.lowWindows(usage);
-      // Also suppress an uncertain in-flight automatic operation before manual OFF.
-      const next: AutomaticRecord = {version: 1, consumed: {...this.record!.consumed, ...this.record!.pending?.keys, ...keys}, pending: null, holdForFreshQuota: keys === null};
-      await this.ports.save(next); this.record = next;
-      this.view = {status: 'suppressed', message: 'Manual off takes priority. Low windows are suppressed until reset.'};
+      await this.load(); if (this.disposed) return;
+      const valid = this.valid(usage), known = valid?.sourceId ? valid : null;
+      const next: AutomaticRecord = {version: 2, consumed: {...this.record!.consumed, ...this.record!.pending?.keys, ...(known ? this.suppression(known) : {})}, pending: null, holdForFreshQuota: known === null || this.record!.holdForFreshQuota};
+      await this.save(next); this.record = next;
+      this.view = {status: 'suppressed', message: 'Manual off takes priority until reset, or confirmed recovery for a quota with no reset date.'};
     });
   }
   observe(usage: QuotaSnapshot | null): Promise<void> {
     return this.serialize(async () => {
       try {
         if (this.disposed) return;
-        await this.load();
-        if (this.disposed) return;
-        const low = this.lowWindows(usage);
-        if (low === null) {this.view = {status: 'stale', message: 'Auto waits for a fresh confirmed quota reading.'}; return;}
+        await this.load(); if (this.disposed) return;
+        if (usage?.identityError) {this.view = {status: 'error', message: usage.identityError}; return;}
+        const valid = this.valid(usage);
+        if (!valid) {this.view = {status: 'stale', message: 'Auto waits for fresh confirmed quota for the selected provider and model.'}; return;}
+        if (!valid.sourceId) {this.view = {status:'stale',message:'Auto waits for a confirmed quota source.'};return;}
         const now = (this.ports.now ?? Date.now)();
-        const consumed = Object.fromEntries(Object.entries(this.record!.consumed).filter(([, until]) => until > now));
-        if (Object.keys(consumed).length > 64) throw Error('Automatic history requires review');
-        const mode = await this.ports.mode();
-        if (this.disposed) return;
+        const consumed = Object.fromEntries(Object.entries(this.record!.consumed).filter(([, until]) => until === null || until > now));
+        for (const w of valid.windows) {
+          const members=valid.windows.filter(other=>other.classId===w.classId);
+          for (const connection of [false,true]) {
+            const group=this.key(valid,w,connection,true), key=this.key(valid,w,connection);
+            if(consumed[group]===null)this.recoveryCounts[group]=Math.max(this.recoveryCounts[group]??0,members.length);
+            const complete=members.length>=(this.recoveryCounts[group]??1);
+            if(complete&&members.every(other=>other.remainingPercent>this.threshold)) {
+              if(consumed[group]===null)delete consumed[group];
+              if(consumed[key]===null)delete consumed[key];
+              const undated=this.key(valid,{...w,id:w.classId,resetsAt:null},connection);
+              if(consumed[undated]===null)delete consumed[undated];
+            }
+          }
+        }
+        if (Object.keys(consumed).length > 128) throw Error('Automatic history requires review');
+        const mode = await this.ports.mode(); if (this.disposed) return;
         if (!mode.available || mode.error) {this.view = {status: 'error', message: 'Auto waits for a healthy native Downshift controller.'}; return;}
         if (this.record!.holdForFreshQuota) {
-          const confirmed = confirmedQuota(usage, this.ports.primaryModel, now)!;
-          const windows = Object.fromEntries(confirmed.windows.map(w => [`${confirmed.scope}:${confirmed.scope === 'model' ? confirmed.model : 'shared'}:${w.window_minutes}:${w.resets_at}`, w.resets_at * 1000]));
-          const next: AutomaticRecord = {version: 1, consumed: {...consumed, ...windows}, pending: null, holdForFreshQuota: false};
-          await this.ports.save(next); this.record = next;
-          this.view = {status: 'suppressed', message: 'Manual off during unknown quota is preserved until the confirmed windows reset.'};
-          return;
+          const next: AutomaticRecord = {version: 2, consumed: {...consumed, ...this.suppression(valid)}, pending: null, holdForFreshQuota: false};
+          await this.save(next); this.record = next;
+          this.view = {status: 'suppressed', message: 'Manual off is preserved for the first confirmed windows after recovery.'}; return;
         }
-        const pending = this.record!.pending;
-        if (pending && (pending.policyId !== this.ports.policyId || mode.enabled || mode.generation !== pending.input.expectedGeneration)) {
-          const next: AutomaticRecord = {version: 1, consumed: {...consumed, ...pending.keys}, pending: null};
-          await this.ports.save(next); this.record = next;
+        const low = this.keys(valid, true);let pending = this.record!.pending;
+        if (pending && (pending.policyId !== this.ports.policyId || pending.sourceId !== valid.sourceId || mode.enabled || mode.generation !== pending.input.expectedGeneration)) {
+          const next: AutomaticRecord = {version: 2, consumed: {...consumed, ...pending.keys}, pending: null, holdForFreshQuota: false};
+          await this.save(next); this.record = next;
           this.view = mode.enabled ? {status: 'enabled', message: 'Downshift is on. Automatic activation never turns it off.'}
-            : {status: 'suppressed', message: 'A newer manual change takes priority until quota resets.'};
-          return;
+            : {status: 'suppressed', message: 'The previous source, model selection or generation changed; its automatic request was cancelled.'}; return;
         }
-        if (pending && !Object.keys(pending.keys).some(key => Object.hasOwn(low, key))) {
-          // A reset/recovered quota cancels an unconfirmed old automatic request.
-          const next: AutomaticRecord = {version: 1, consumed, pending: null};
-          await this.ports.save(next); this.record = next;
-          this.view = {status: 'waiting', message: 'Quota recovered; the previous automatic request was not repeated.'};
-          return;
+        if(pending?.sourceScope==='connection') {
+          // Issuer identity is unknown: never replay a persisted decision, even on the same connection.
+          const next:AutomaticRecord={version:2,consumed,pending:null,holdForFreshQuota:false};
+          await this.save(next);this.record=next;pending=null;
+        }
+        if (pending && !Object.keys(pending.keys).some(key => Object.hasOwn(low, key) && low[key] === pending.keys[key])) {
+          const next: AutomaticRecord = {version: 2, consumed, pending: null, holdForFreshQuota: false};
+          await this.save(next); this.record = next;
+          this.view = {status: 'waiting', message: 'Quota recovered; the previous automatic request was not repeated.'}; return;
         }
         if (mode.enabled) {this.view = {status: 'enabled', message: 'Downshift is on. Automatic activation never turns it off.'}; return;}
-        const fresh = Object.fromEntries(Object.entries(low).filter(([key]) => !Object.hasOwn(consumed, key)));
+        const fresh = Object.fromEntries(valid.windows.filter(w=>w.remainingPercent<=this.threshold&&!this.blocked(valid,w,consumed)).map(w=>[this.key(valid,w),w.resetsAt]));
         if (!pending && !Object.keys(fresh).length) {
-          this.view = Object.keys(low).length ? {status: 'suppressed', message: 'This low quota window was already handled; waiting for reset.'}
-            : {status: 'waiting', message: 'Auto on at 5% remaining in any active Codex quota window.'};
-          return;
+          // Persist recovery even when it does not activate; a restart must not resurrect a no-reset barrier.
+          const next: AutomaticRecord = {version: 2, consumed, pending: null, holdForFreshQuota: false};
+          if (JSON.stringify(next) !== JSON.stringify(this.record)) {await this.save(next); this.record = next;}
+          this.view = Object.keys(low).length ? {status: 'suppressed', message: 'This low quota was already handled; waiting for reset or confirmed recovery.'} : this.waiting(); return;
         }
-        const operation = pending ?? {policyId: this.ports.policyId, input: {enabled: true, expectedGeneration: mode.generation, requestId: (this.ports.uuid ?? randomUUID)()}, keys: fresh};
-        if (!pending) {const next: AutomaticRecord = {version: 1, consumed, pending: operation}; await this.ports.save(next); this.record = next;}
+        const operation = pending ?? {policyId: this.ports.policyId, sourceId: valid.sourceId, sourceScope:valid.sourceScope, input: {enabled: true as const, expectedGeneration: mode.generation, requestId: (this.ports.uuid ?? randomUUID)()}, keys: fresh};
+        if (!pending) {const next: AutomaticRecord = {version: 2, consumed, pending: operation, holdForFreshQuota: false}; await this.save(next); this.record = next;}
         if (this.disposed) return;
+        const confirmation = this.ports.confirm ? this.valid(await this.ports.confirm(valid)) : this.valid(valid);
+        if (this.disposed) return;
+        if (!confirmation || confirmation.identityError || confirmation.sourceId !== operation.sourceId
+          || !Object.keys(operation.keys).some(key => Object.hasOwn(this.keys(confirmation, true), key) && this.keys(confirmation, true)[key] === operation.keys[key])) {
+          this.view = {status: 'stale', message: 'The quota source changed or could not be confirmed after saving. No activation was sent.'}; return;
+        }
         const result = await this.ports.set(operation.input);
         if (!result.available || !result.enabled || result.error) throw Error('Activation not confirmed');
-        const next: AutomaticRecord = {version: 1, consumed: {...consumed, ...operation.keys}, pending: null};
-        await this.ports.save(next); this.record = next;
-        this.view = {status: 'enabled', message: 'Downshift enabled automatically at 5% or less remaining. Shared quota still applies.'};
-      } catch {
-        this.view = {status: 'error', message: 'Automatic activation is unconfirmed; the same operation will be checked again.'};
-      }
+        const next: AutomaticRecord = {version: 2, consumed: {...consumed, ...operation.keys}, pending: null, holdForFreshQuota: false};
+        await this.save(next); this.record = next;
+        this.view = {status: 'enabled', message: `Downshift enabled automatically at ${this.threshold}% or less remaining. ${valid.sourceScope==='connection' ? 'Source is the current provider connection; issuer account identity is unavailable.' : 'Quota is scoped to the provider account.'} Shared quota still applies.`};
+      } catch {this.view = {status: 'error', message: 'Automatic activation is unconfirmed; its saved operation will be checked against the same source and selection.'};}
+      finally {if(usage?.groupedWindows)this.view={...this.view,message:`${this.view.message} Windows without distinct provider IDs share conservative suppression; all members must recover.`};if(usage?.sourceScope==='connection'&&!this.view.message.includes('current provider connection'))this.view={...this.view,message:`${this.view.message} Source is the current provider connection; issuer account identity is unavailable.`};}
     });
   }
 }

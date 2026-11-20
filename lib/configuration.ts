@@ -16,5 +16,5 @@ export function checkSelection(config:Configuration,catalog:Catalog){
  if(!model)throw Error('Choose a Downshift model from the same provider.');
  if(!model.reasoningLevels.some(level=>level.id===config.profile.reasoningLevel))throw Error('Choose a supported reasoning level.');
  if(!model.serviceTiers.some(tier=>tier.id===config.profile.serviceTier))throw Error('Choose a supported service tier.');
- if(config.autoEnabled&&config.providerId!=='codex')throw Error('Automatic activation needs verified quota semantics. This provider currently supports manual switching.');
+ if(config.autoEnabled&&!catalog.providers.some(p=>p.id===config.providerId&&p.usageSupported))throw Error('This provider does not expose quota through BB. Automatic activation needs a provider usage source.');
 }
