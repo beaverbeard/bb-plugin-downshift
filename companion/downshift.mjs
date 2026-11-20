@@ -63,11 +63,12 @@ function options(){
 }
 function saveMarker(o,m){const f=o.markerFile+'.tmp';fs.writeFileSync(f,JSON.stringify(m,null,2)+'\n',{mode:0o600,flag:'wx'});fs.renameSync(f,o.markerFile);}
 function marker(o,create=false){
+ const distributionSha256=crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'manifest.json'))).update(fs.readFileSync(path.join(root,'inventory.json'))).digest('hex');
  if(fs.existsSync(o.data)&&fs.lstatSync(o.data).isSymbolicLink())throw Error('Data directory must not be a symlink');
- if(fs.existsSync(o.markerFile)){const m=JSON.parse(fs.readFileSync(o.markerFile,'utf8'));if(m.id!==manifest.id||m.root!==root||m.port!==o.port||m.hostPort!==o.hostPort)throw Error('Data belongs to another distribution or port configuration. Use a new directory; upgrades require operator review.');return m;}
+ if(fs.existsSync(o.markerFile)){const m=JSON.parse(fs.readFileSync(o.markerFile,'utf8'));if(m.id!==manifest.id||m.root!==root||m.distributionSha256!==distributionSha256||m.port!==o.port||m.hostPort!==o.hostPort)throw Error('Data belongs to another distribution or port configuration. Use a new directory; upgrades require operator review.');return m;}
  if(!create)throw Error('This data directory was not created by this companion');
  if(fs.existsSync(o.data)&&fs.readdirSync(o.data).length)throw Error('Refusing a nonempty existing data directory. Choose a new directory.');
- fs.mkdirSync(o.data,{recursive:true,mode:0o700});const m={id:manifest.id,root,port:o.port,hostPort:o.hostPort,pluginInstalled:false};fs.writeFileSync(o.markerFile,JSON.stringify(m,null,2)+'\n',{mode:0o600,flag:'wx'});return m;
+ fs.mkdirSync(o.data,{recursive:true,mode:0o700});const m={id:manifest.id,root,distributionSha256,port:o.port,hostPort:o.hostPort,pluginInstalled:false};fs.writeFileSync(o.markerFile,JSON.stringify(m,null,2)+'\n',{mode:0o600,flag:'wx'});return m;
 }
 function env(o){
  const e={...process.env};
