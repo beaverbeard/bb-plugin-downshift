@@ -15,7 +15,7 @@ export const rpcContract=defineRpcContract({
  economy_catalog:{input:z.object({providerId:z.string().max(64).nullable()}),output:catalogSchema},
  economy_configure:{input:configurationSchema,output:setupSchema},
 });
-const missing='Requires the native bb.execution-policy/v1 capability. Stock BB is unsupported. See the package compatibility guide.';
+const missing='Switching requires the native bb.execution-policy/v1 capability, which stock BB lacks. A model selection can still be saved. See the package compatibility guide.';
 
 export default async function plugin(bb:BbPluginApi){
  const native=nativeCapability((bb as BbPluginApi&{experimental_executionPolicies?:unknown}).experimental_executionPolicies);
