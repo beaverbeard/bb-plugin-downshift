@@ -13,13 +13,13 @@ import './downshift.css';
 export function DownshiftControl(){
  const [,repaint]=useState(0);
  useEffect(()=>{const timer=setInterval(()=>repaint(value=>value+1),30000);return()=>clearInterval(timer);},[]);
- const [host,setHost]=useState<HTMLElement|null>(null);
+ const [host,setHost]=useState<HTMLElement|null>(null),headerMount=useRef(0);
  // Hiding the header switch keeps the state, the palette and the app-wide tint; it only skips the portal.
  // Wait for the saved value so a hidden switch does not flash in on a cold load.
  const settings=useSettings(),shown=!settings.isLoading&&settings.values?.showHeaderSwitch!==false;
  useEffect(()=>{
-  // A popup left open, or queued by a switch that finished while hidden, must not reappear with the header.
-  setDetails(false);
+  // A new mount closes any popup, and a switch started under an earlier mount does not open one (see toggle).
+  headerMount.current++;setDetails(false);
   if(!shown){setHost(null);return;}
   const target=document.createElement('div');target.className='bb-downshift-host';target.dataset.bbPluginRoot='';target.dataset.bbPlugin='downshift';
   let frame=0;
@@ -48,9 +48,10 @@ export function DownshiftControl(){
  async function toggle(enabled = !state?.enabled){
   if(busy||!state?.available||!state.configurationId)return;
   // Retry an uncertain operation with the SAME UUID; never invert based on stale local UI.
+  const mount=headerMount.current,openDetails=(open:boolean)=>{if(mount===headerMount.current)setDetails(open);};
   const input=mutation.current??{enabled,expectedGeneration:state.generation,requestId:crypto.randomUUID(),configurationId:state.configurationId};mutation.current=input;setBusy(true);setError(null);serial.current++;
-  try{const next=await rpc.call('economy_set',input);mutation.current=null;if(live.current){acceptState(next);setDetails(next.pending.length+next.unavailable.length+next.conflicts.length>0);}}
-  catch(error){const failure=downshiftFailure(error);if(!failure.retry)mutation.current=null;await refresh();if(live.current){setError(failure.error);setDetails(true);}}
+  try{const next=await rpc.call('economy_set',input);mutation.current=null;if(live.current){acceptState(next);openDetails(next.pending.length+next.unavailable.length+next.conflicts.length>0);}}
+  catch(error){const failure=downshiftFailure(error);if(!failure.retry)mutation.current=null;await refresh();if(live.current){setError(failure.error);openDetails(true);}}
   finally{if(live.current)setBusy(false);}
  }
  const issueCount=(state?.pending.length??0)+(state?.unavailable.length??0)+(state?.conflicts.length??0);
