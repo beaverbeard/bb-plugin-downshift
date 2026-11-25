@@ -3,7 +3,7 @@ import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {useRpc,useRealtime,useRealtimeConnectionState,type PluginAppBuilder} from '@get-bb/plugin-sdk/app';
 import type {rpcContract} from './server';
 import {downshiftLabel,type DownshiftState} from './lib/state';
-import {downshiftFailure,type DownshiftClientError} from './lib/client';
+import {downshiftFailure,switchRequest,type DownshiftClientError,type SwitchRequest} from './lib/client';
 import {DownshiftPalette,type PaletteView} from './lib/palette';
 import {DownshiftSwitch} from './lib/downshift-switch';
 import {headerParent,releaseEmptyHeaderDock} from './lib/header-dock';
@@ -33,7 +33,7 @@ export function DownshiftControl(){
  const acceptState=useCallback((next:DownshiftState)=>{if(mutation.current&&mutation.current.configurationId!==next.configurationId)mutation.current=null;setState(next);const view=paletteOwner.current?.confirm(next);if(view)setPalette({...view});},[]);
  const rpc=useRpc<typeof rpcContract>();const connection=useRealtimeConnectionState();
  const [state,setState]=useState<DownshiftState|null>(null),[busy,setBusy]=useState(false),[details,setDetails]=useState(false),[error,setError]=useState<DownshiftClientError|null>(null);
- const mutation=useRef<{enabled:boolean;expectedGeneration:number;requestId:string;configurationId:string}|null>(null);
+ const mutation=useRef<SwitchRequest|null>(null);
  const live=useRef(true),serial=useRef(0),root=useRef<HTMLDivElement>(null);
  const refresh=useCallback(async()=>{const request=++serial.current;try{const next=await rpc.call('economy_state');if(live.current&&request===serial.current){acceptState(next);setError(current=>current?.kind==='connection'?null:current);}}catch{if(live.current&&request===serial.current){const view=paletteOwner.current?.unconfirm();if(view)setPalette({...view});setError({kind:'connection',message:'Server connection lost. State is unconfirmed.'});}}},[rpc,acceptState]);
  useEffect(()=>{live.current=true;void refresh();return()=>{live.current=false;};},[refresh]);
@@ -41,8 +41,8 @@ export function DownshiftControl(){
  useEffect(()=>{if(!details)return;const close=(event:PointerEvent)=>{if(!root.current?.contains(event.target as Node))setDetails(false);};const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')setDetails(false);};document.addEventListener('pointerdown',close);document.addEventListener('keydown',escape);return()=>{document.removeEventListener('pointerdown',close);document.removeEventListener('keydown',escape);};},[details]);
  async function toggle(enabled = !state?.enabled){
   if(busy||!state?.available||!state.configurationId)return;
-  // Retry an uncertain operation with the SAME UUID; never invert based on stale local UI.
-  const input=mutation.current??{enabled,expectedGeneration:state.generation,requestId:crypto.randomUUID(),configurationId:state.configurationId};mutation.current=input;setBusy(true);setError(null);serial.current++;
+  // Retry an uncertain operation with the SAME UUID (same direction only); never invert based on stale local UI.
+  const input=switchRequest(mutation.current,enabled,state.generation,state.configurationId);mutation.current=input;setBusy(true);setError(null);serial.current++;
   try{const next=await rpc.call('economy_set',input);mutation.current=null;if(live.current){acceptState(next);setDetails(next.pending.length+next.unavailable.length+next.conflicts.length>0);}}
   catch(error){const failure=downshiftFailure(error);if(!failure.retry)mutation.current=null;await refresh();if(live.current){setError(failure.error);setDetails(true);}}
   finally{if(live.current)setBusy(false);}

@@ -44,8 +44,10 @@ export default async function plugin(bb:BbPluginApi){
   if(!native||!configuration||disposed)return;
   const config=configuration,id=policyId(config);
   try{
-   const handle=native.register({id,providerId:config.providerId,profile:config.profile});controller=handle;
+   const handle=native.register({id,providerId:config.providerId,profile:config.profile});
+   // Validate before adopting the handle: release() on a malformed handle would throw out of the catch below and abort plugin startup.
    if(!handle||!['status','set','subscribe','release'].every(k=>typeof(handle as unknown as Record<string,unknown>)[k]==='function'))throw Error('Invalid native controller');
+   controller=handle;
    unsubscribe=handle.subscribe(publish);
    automatic=new AutomaticDownshift({
     load:async()=>(await bb.storage.kv.get<AutomaticRecord>(`automatic-v2:${config.providerId}`))??(await bb.storage.kv.get<unknown>(`automatic-v1:${config.providerId}`))??null,
@@ -102,7 +104,8 @@ export default async function plugin(bb:BbPluginApi){
    if(!configuration||input.configurationId!==configurationId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});
    const current=automatic;if(!input.enabled)manualOffPending++;
    try{
-   if(!input.enabled&&current)await current.suppress(latestQuota);
+   // OFF restores original profiles, so a failed suppression record must not block it. With auto on, pause auto for this load instead so it cannot re-enable.
+   if(!input.enabled&&current)await current.suppress(latestQuota).catch(()=>{if(configuration?.autoEnabled&&automatic===current){current.dispose();current.view={status:'error',message:'Manual off could not be saved. Automatic activation is paused until Downshift reloads.'};}});
    return await serialize(async()=>{if(!configuration||input.configurationId!==configurationId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});const {configurationId:_selectionId,...operation}=input;const next=set(operation);publish();return next;});
    }finally{if(!input.enabled)manualOffPending--;}
   },
