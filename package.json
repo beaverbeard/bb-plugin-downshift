@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-downshift",
-  "version": "0.1.0-rc.6",
+  "version": "0.1.0-rc.7",
   "type": "module",
   "engines": {
     "bb": ">=0.50.1",
@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Downshift [Experimental]",
-    "description": "Choose your main and Downshift models from BB’s catalog. Requires the included companion native BB integration; stock BB is unsupported.",
+    "description": "Choose your main and Downshift models from BB\u2019s catalog. Requires the companion native BB source integration; stock BB cannot switch execution.",
     "branding": {
       "icon": "./assets/turtle.svg",
       "experimental_icons": {

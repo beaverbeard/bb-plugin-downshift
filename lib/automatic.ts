@@ -13,9 +13,12 @@ const legacySchema = z.object({version: z.literal(1), consumed: z.record(z.strin
   pending: z.object({input: inputSchema, keys: z.record(z.string().min(1), z.number().finite()), policyId: z.string().min(1).max(64).optional()}).strict().nullable(),
   holdForFreshQuota: z.boolean().optional()}).strict();
 export type AutomaticRecord = z.infer<typeof recordSchema>;
+const manualCheckpointSchema=z.object({version:z.literal(1),policyId:z.string().min(1).max(100),generation:z.number().int().nonnegative()}).strict();
+export type ManualCheckpoint=z.infer<typeof manualCheckpointSchema>;
 export interface AutomaticPorts {
   load(): Promise<unknown>;
   save(value: AutomaticRecord): Promise<void>;
+  manualCheckpoint?: {policyId:string;load():Promise<unknown>;save(value:ManualCheckpoint):Promise<void>};
   mode(): ModeState | Promise<ModeState>;
   confirm?(usage: QuotaSnapshot): Promise<QuotaSnapshot | null>;
   set(input: ModeOperation): ModeState | Promise<ModeState>;
@@ -34,6 +37,7 @@ export class AutomaticDownshift {
   private record: AutomaticRecord | null = null;
   private queue: Promise<void> = Promise.resolve();
   private disposed = false;
+  private manualPause=false;
   private threshold: number;
   private recoveryCounts:Record<string,number>={};
   constructor(private ports: AutomaticPorts) {
@@ -44,6 +48,42 @@ export class AutomaticDownshift {
   private waiting(): AutomaticView {return {status: 'waiting', message: `Auto on at ${this.threshold}% remaining in the selected provider’s applicable quota.`};}
   dispose() {this.disposed = true;}
   settled() {return this.queue;}
+  get requiresManualRecovery(){return this.manualPause;}
+  pauseForManualRecovery(message='Automatic activation is paused to preserve manual OFF. Turn Downshift on manually when ready; it will not resume itself after reload.'){
+    this.manualPause=true;this.view={status:'error',message};
+  }
+  acknowledgeManualMode(mode:ModeState):Promise<void>{
+    return this.serialize(async()=>{
+      if(this.disposed)return;
+      if(!mode.available||mode.error)throw Error('Native manual mode is not confirmed');
+      const checkpoint=this.ports.manualCheckpoint;
+      if(checkpoint)await checkpoint.save({version:1,policyId:checkpoint.policyId,generation:mode.generation});
+      if(this.disposed)return;
+      this.manualPause=false;
+      this.view=mode.enabled?{status:'enabled',message:'Downshift is on. Automatic activation never turns it off.'}:{status:'suppressed',message:'Manual off takes priority until reset, or confirmed recovery for a quota with no reset date.'};
+    });
+  }
+  async hasDurableOffPause(mode:ModeState):Promise<boolean>{
+    const checkpoint=this.ports.manualCheckpoint;
+    if(!checkpoint||mode.enabled)return false;
+    try{
+      const value=await checkpoint.load();
+      const saved=value==null?null:manualCheckpointSchema.parse(value);
+      if(mode.generation===0)return !!saved&&saved.policyId===checkpoint.policyId&&saved.generation!==0;
+      return !saved||saved.policyId!==checkpoint.policyId||saved.generation!==mode.generation;
+    }catch{return false;}
+  }
+  private async manualStateConfirmed(mode:ModeState):Promise<boolean>{
+    const checkpoint=this.ports.manualCheckpoint;
+    if(!checkpoint||mode.enabled)return true;
+    let saved:ManualCheckpoint|null;
+    try{const value=await checkpoint.load();saved=value==null?null:manualCheckpointSchema.parse(value);}
+    catch{this.pauseForManualRecovery('Automatic activation is paused because the saved manual-mode checkpoint cannot be read. Manual switching is still available; turn Downshift on manually when ready.');return false;}
+    if(this.disposed)return false;
+    if(mode.generation===0&&(!saved||saved.policyId!==checkpoint.policyId))return true;
+    if(saved?.policyId===checkpoint.policyId&&saved.generation===mode.generation)return true;
+    this.pauseForManualRecovery();return false;
+  }
   private serialize(action: () => Promise<void>): Promise<void> {
     const result = this.queue.then(action);
     this.queue = result.catch(() => {});
@@ -101,7 +141,7 @@ export class AutomaticDownshift {
   observe(usage: QuotaSnapshot | null): Promise<void> {
     return this.serialize(async () => {
       try {
-        if (this.disposed) return;
+        if (this.disposed||this.manualPause) return;
         await this.load(); if (this.disposed) return;
         if (usage?.identityError) {this.view = {status: 'error', message: usage.identityError}; return;}
         const valid = this.valid(usage);
@@ -126,6 +166,7 @@ export class AutomaticDownshift {
         if (Object.keys(consumed).length > 128) throw Error('Automatic history requires review');
         const mode = await this.ports.mode(); if (this.disposed) return;
         if (!mode.available || mode.error) {this.view = {status: 'error', message: 'Auto waits for a healthy native Downshift controller.'}; return;}
+        if(!await this.manualStateConfirmed(mode))return;
         if (this.record!.holdForFreshQuota) {
           const next: AutomaticRecord = {version: 2, consumed: {...consumed, ...this.suppression(valid)}, pending: null, holdForFreshQuota: false};
           await this.save(next); this.record = next;

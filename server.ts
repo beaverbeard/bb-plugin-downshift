@@ -26,7 +26,7 @@ export default async function plugin(bb:BbPluginApi){
  let configuration:Configuration|null=parsed.success?parsed.data:null;
  let controller:NativeController|null=null,unsubscribe=()=>{},automatic:AutomaticDownshift|null=null;
  let configurationError=native?'Choose your main model and a Downshift model in Downshift settings.':missing;
- let latestQuota:QuotaSnapshot|null=null,quotaSignal:AbortSignal|null=null,disposed=false,reconfiguring=false,epoch=0,manualOffPending=0,autoPaused=false;
+ let latestQuota:QuotaSnapshot|null=null,quotaSignal:AbortSignal|null=null,disposed=false,reconfiguring=false,epoch=0,manualOffPending=0;
  let readingAbort=new AbortController();
  let operations:Promise<unknown>=Promise.resolve();
  const serialize=<T,>(action:()=>Promise<T>):Promise<T>=>{const result=operations.then(action);operations=result.catch(()=>{});return result;};
@@ -41,7 +41,7 @@ export default async function plugin(bb:BbPluginApi){
   try{controller.set(input);return status();}
   catch(error){if(error instanceof Error&&(error as Error&{code?:string}).code==='execution_policy_conflict')throw new experimental_PluginRpcRefusal({code:'conflict',message:error.message});throw error;}
  };
- const release=()=>{epoch++;readingAbort.abort();readingAbort=new AbortController();automatic?.dispose();automatic=null;autoPaused=false;unsubscribe();unsubscribe=()=>{};controller?.release();controller=null;latestQuota=null;};
+ const release=()=>{epoch++;readingAbort.abort();readingAbort=new AbortController();automatic?.dispose();automatic=null;unsubscribe();unsubscribe=()=>{};controller?.release();controller=null;latestQuota=null;};
  const register=()=>{
   if(!native||!configuration||disposed)return;
   const config=configuration,id=policyId(config);
@@ -55,6 +55,7 @@ export default async function plugin(bb:BbPluginApi){
    automatic=new AutomaticDownshift({
     load:async()=>(await bb.storage.kv.get<AutomaticRecord>(`automatic-v2:${config.providerId}`))??(await bb.storage.kv.get<unknown>(`automatic-v1:${config.providerId}`))??null,
     save:value=>bb.storage.kv.set(`automatic-v2:${config.providerId}`,value),
+    manualCheckpoint:{policyId:id,load:()=>bb.storage.kv.get<unknown>(`automatic-manual-v1:${id}`),save:value=>bb.storage.kv.set(`automatic-manual-v1:${id}`,value)},
     mode:status,set:input=>{if(disposed||reconfiguring||manualOffPending>0||!quotaSignal||quotaSignal.aborted||configuration!==config)throw Error('Configuration changed');return set(input);},
     providerId:config.providerId,primaryModel:config.primaryModel,policyId:configurationId(config),
     confirm:async()=>{if(!quotaSignal||disposed||reconfiguring||configuration!==config)return null;const read=await readNativeQuota(bb.sdk,config,AbortSignal.any([quotaSignal,readingAbort.signal,AbortSignal.timeout(12_000)]));return read.quota;},
@@ -108,9 +109,17 @@ export default async function plugin(bb:BbPluginApi){
    if(!configuration||input.configurationId!==configurationId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});
    const current=automatic;if(!input.enabled)manualOffPending++;
    try{
-   // OFF restores original profiles, so a failed suppression record must not block it. With auto on, pause auto for this load instead so it cannot re-enable.
-   if(!input.enabled&&current)await current.suppress(latestQuota).catch(()=>{if(configuration?.autoEnabled&&automatic===current){current.dispose();autoPaused=true;current.view={status:'error',message:'Manual off could not be saved. Automatic activation is paused until Downshift reloads.'};}});
-   return await serialize(async()=>{if(!configuration||input.configurationId!==configurationId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});const {configurationId:_selectionId,...operation}=input;const next=set(operation);publish();return next;});
+   let suppressionSaved=true;
+   if(!input.enabled&&current)try{await current.suppress(latestQuota);}catch{suppressionSaved=false;if(automatic===current)current.pauseForManualRecovery();}
+   return await serialize(async()=>{
+    if(!configuration||input.configurationId!==configurationId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});
+    const {configurationId:_selectionId,...operation}=input;const next=set(operation);
+    if(!input.enabled&&!suppressionSaved&&current&&automatic===current&&!await current.hasDurableOffPause(next)){
+     publish();throw new experimental_PluginRpcRefusal({code:'conflict',message:'Downshift is off, but its automatic pause could not be saved or confirmed. Auto is paused for this load. Retry manual OFF after storage recovers before reloading.'});
+    }
+    if(current&&automatic===current&&(input.enabled||suppressionSaved))try{await current.acknowledgeManualMode(next);}catch{current.pauseForManualRecovery();}
+    publish();return {...next,...(configuration.autoEnabled&&automatic?{automatic:automatic.view}:{})};
+   });
    }finally{if(!input.enabled)manualOffPending--;}
   },
  });
@@ -120,10 +129,10 @@ export default async function plugin(bb:BbPluginApi){
    while(!signal.aborted&&!disposed){
     const config=configuration,observer=automatic,version=epoch;
     // A paused observer keeps its warning; quota polling must not replace it.
-    if(config?.autoEnabled&&observer&&!autoPaused){
+    if(config?.autoEnabled&&observer&&!observer.requiresManualRecovery){
      const {quota,issue}=await readNativeQuota(bb.sdk,config,AbortSignal.any([signal,readingAbort.signal,AbortSignal.timeout(12_000)]));
      if(signal.aborted||disposed)return;
-     if(version===epoch&&configuration===config&&!reconfiguring){latestQuota=quota;await observer.observe(quota);if(!quota&&issue)observer.view={status:'stale',message:issue};publish();}
+     if(version===epoch&&configuration===config&&!reconfiguring){latestQuota=quota;await observer.observe(quota);if(!quota&&issue&&!observer.requiresManualRecovery)observer.view={status:'stale',message:issue};publish();}
     }
     await new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};const timer=setTimeout(done,30_000);signal.addEventListener('abort',done,{once:true});if(signal.aborted)done();});
    }

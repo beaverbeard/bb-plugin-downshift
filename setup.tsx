@@ -2,11 +2,11 @@ import {useEffect,useState,useRef} from 'react';
 import {useRpc} from '@get-bb/plugin-sdk/app';
 import type {rpcContract} from './server';
 import type {Catalog,Configuration} from './lib/configuration';
-import {readSetupDraft,saveSetupDraft} from './lib/setup-draft';
+import {readSetupDraft,saveSetupDraft,setupDraftKey,legacySetupDraftKeys} from './lib/setup-draft';
 
 export function DownshiftSetup({onSaved}:{onSaved?:()=>void}){
  const rpc=useRpc<typeof rpcContract>();
- const draftKey='bb.downshift.setup.v1';
+ const draftKey=setupDraftKey;
  const draftBase=useRef<string|null>(null),initialized=useRef(false);
  const [catalog,setCatalog]=useState<Catalog>({providers:[],models:[],error:null});
  const [provider,setProvider]=useState(''),[main,setMain]=useState(''),[model,setModel]=useState(''),[reasoning,setReasoning]=useState(''),[tier,setTier]=useState('default'),[auto,setAuto]=useState(false);
@@ -15,7 +15,7 @@ export function DownshiftSetup({onSaved}:{onSaved?:()=>void}){
  useEffect(()=>{let alive=true;initialized.current=false;setBusy(true);setError('');void(async()=>{
   try{
    const setup=await rpc.call('economy_configuration');if(!alive)return;setNative(setup.nativeAvailable);
-   const base=JSON.stringify(setup.configuration),draft=readSetupDraft(draftKey,base),c=setup.configuration;
+   const base=JSON.stringify(setup.configuration),draft=readSetupDraft(draftKey,base,legacySetupDraftKeys),c=setup.configuration;
    draftBase.current=base;
    const values=draft??{provider:c?.providerId??'',main:c?.primaryModel??'',model:c?.profile.model??'',reasoning:c?.profile.reasoningLevel??'',tier:c?.profile.serviceTier??'default',auto:c?.autoEnabled??false};
    setProvider(values.provider);setMain(values.main);setModel(values.model);setReasoning(values.reasoning);setTier(values.tier);setAuto(values.auto);

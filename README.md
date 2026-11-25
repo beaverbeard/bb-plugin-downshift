@@ -92,6 +92,13 @@ OFF follows the selected BB theme; ON has an orange track. The removable warm
 tint follows that same theme. Cached last-confirmed ON stays visibly unconfirmed
 until the server responds. Warnings expose details when needed. All text is English.
 
+A compact switch is available in the header and in the sidebar footer. Turn off
+**Show the switch in the page header** in Downshift settings to keep only the
+sidebar control; state and the warm tint remain shared. Model selections can be
+saved on stock BB, but switching still requires the native integration. Unsaved
+setup from either older setup surface migrates to the shared draft without
+deleting the old local data.
+
 There is no quota percentage widget. Quota is read internally for automatic
 activation; an independent quota display can be installed separately.
 
@@ -163,3 +170,19 @@ MIT. The turtle branding and rabbit/turtle control silhouettes use Material
 Design Icons under Apache-2.0. Artwork,
 provenance and licenses are in `assets/`. The upstream BB license accompanies
 the source patch under `compatibility/`.
+
+### Manual OFF and storage recovery
+
+Manual OFF restores the original profiles even if its automatic-suppression
+record cannot be saved. Automatic activation then stays paused across reloads.
+A missing, damaged or mismatched manual-mode checkpoint also pauses it; quota
+recovery or a storage repair alone never re-enables Downshift. When ready, turn
+Downshift on manually. A successful manual switch and checkpoint save restore
+normal automatic behavior. An existing OFF policy upgraded without a checkpoint
+also requires this explicit action.
+
+A repeated OFF on an already-off native policy may not advance its generation.
+If automatic suppression cannot be saved and no durable pause can be confirmed,
+the RPC reports a refusal even though the current mode is off. Retry manual OFF
+after repairing storage before reloading. A failed request is not a confirmed
+durable pause; no temporary ON is used to manufacture a generation change.
