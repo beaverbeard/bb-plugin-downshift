@@ -1,12 +1,12 @@
 import {createPortal} from 'react-dom';
 import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
-import {useRpc,useRealtime,useRealtimeConnectionState,type PluginAppBuilder} from '@get-bb/plugin-sdk/app';
+import {useRpc,useRealtime,useRealtimeConnectionState,useSettings,type PluginAppBuilder} from '@get-bb/plugin-sdk/app';
 import type {rpcContract} from './server';
 import {downshiftLabel,type DownshiftState} from './lib/state';
 import {downshiftFailure,type DownshiftClientError} from './lib/client';
 import {DownshiftPalette,type PaletteView} from './lib/palette';
 import {DownshiftSwitch} from './lib/downshift-switch';
-import {headerParent,releaseEmptyHeaderDock} from './lib/header-dock';
+import {headerInsertionPoint,headerParent,releaseEmptyHeaderDock} from './lib/header-dock';
 import {DownshiftSetup} from './setup';
 import './downshift.css';
 
@@ -14,16 +14,19 @@ export function DownshiftControl(){
  const [,repaint]=useState(0);
  useEffect(()=>{const timer=setInterval(()=>repaint(value=>value+1),30000);return()=>clearInterval(timer);},[]);
  const [host,setHost]=useState<HTMLElement|null>(null);
+ // Hiding the header switch keeps the state, the palette and the app-wide tint; it only skips the portal.
+ const shown=useSettings().values?.showHeaderSwitch!==false;
  useEffect(()=>{
+  if(!shown){setHost(null);return;}
   const target=document.createElement('div');target.className='bb-downshift-host';target.dataset.bbPluginRoot='';target.dataset.bbPlugin='downshift';
   let frame=0;
   const attach=()=>{frame=0;const parent=headerParent(),header=parent.hasAttribute('data-bb-header-addons')?null:parent;
    target.dataset.docked=header?'true':'false';
-   if(target.parentElement!==parent){if(header)header.insertBefore(target,header.lastElementChild);else parent.append(target);releaseEmptyHeaderDock();}
+   if(target.parentElement!==parent){if(header)header.insertBefore(target,headerInsertionPoint(header));else parent.append(target);releaseEmptyHeaderDock();}
   };
   const observer=new MutationObserver(()=>{if(!frame)frame=requestAnimationFrame(attach);});observer.observe(document.body,{childList:true,subtree:true});
   attach();setHost(target);return()=>{observer.disconnect();cancelAnimationFrame(frame);target.remove();releaseEmptyHeaderDock();};
- },[]);
+ },[shown]);
  const paletteOwner=useRef<DownshiftPalette|null>(null);
  const [palette,setPalette]=useState<PaletteView>({warm:false,confirmed:false});
  useLayoutEffect(()=>{let cache:Storage|null=null;try{cache=window.localStorage;}catch{}
@@ -48,7 +51,8 @@ export function DownshiftControl(){
   finally{if(live.current)setBusy(false);}
  }
  const issueCount=(state?.pending.length??0)+(state?.unavailable.length??0)+(state?.conflicts.length??0);
- const warning=!!error||!!state?.error||issueCount>0||!palette.confirmed;
+ const automaticIssue=state?.automatic?.status==='stale'||state?.automatic?.status==='error';
+ const warning=!!error||!!state?.error||issueCount>0||automaticIssue||!palette.confirmed;
  const label=palette.warm&&!palette.confirmed?'Downshift · ?':downshiftLabel(state);
  if(!host)return null;
  return createPortal(<div ref={root} className="bb-downshift" data-phase={state?.phase??'unknown'} data-warm={palette.warm||undefined} data-confirmed={palette.confirmed} data-warning={warning||undefined}>
@@ -63,7 +67,7 @@ export function DownshiftControl(){
    {state?.pending.length? <p>Waiting for current turns to finish: {state.pending.length}. Work continues.</p>:null}
    {state?.unavailable.map((item,index)=><p key={`host-${item.threadId}-${index}`} role="alert">{item.hostId??'Host'}: {item.reason}</p>)}
    {state?.conflicts.map((item,index)=><p key={`conflict-${item.threadId}-${index}`} role="alert">{item.reason}</p>)}
-   <details className="bb-downshift-configuration" open={!state?.profile}><summary>Model selection</summary><DownshiftSetup onSaved={()=>void refresh()}/></details>
+   <p>Change models on the Downshift page in Plugins.</p>
    <p>Original settings are preserved. Turn Downshift off to change them.</p>
    {state?.automatic&&<p role="status">{state.automatic.message}</p>}
    <p className="bb-downshift-note">A smaller model can reduce quota use; shared subscription limits still apply.</p>

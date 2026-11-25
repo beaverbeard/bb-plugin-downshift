@@ -3,24 +3,26 @@
 .bb-downshift{pointer-events:auto;position:relative;z-index:90;font:13px/1.4 var(--font-sans,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif);color:var(--foreground);color-scheme:inherit;max-width:210px;-webkit-app-region:no-drag}
 .bb-downshift *{box-sizing:border-box}
 .bb-downshift .bb-downshift-pill{display:flex;align-items:center;gap:2px}
-.bb-downshift button{font:inherit;color:inherit;border:0;background:transparent;cursor:pointer;min-height:44px;display:flex;align-items:center;justify-content:center;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+.bb-downshift button{font:inherit;color:inherit;border:0;background:transparent;cursor:pointer;min-height:32px;display:flex;align-items:center;justify-content:center;white-space:nowrap;-webkit-tap-highlight-color:transparent}
 .bb-downshift button:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
 .bb-downshift button:disabled{cursor:default;opacity:.65}
-.bb-downshift .bb-downshift-switch{--downshift-position:0;--downshift-travel:56px;flex:none;width:100px;height:44px;padding:4px;border-radius:999px;touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.bb-downshift .bb-downshift-switch{--downshift-position:0;--downshift-travel:28px;flex:none;width:60px;height:32px;padding:2px;border-radius:999px;touch-action:pan-y;user-select:none;-webkit-user-select:none}
 .bb-downshift .bb-downshift-switch[aria-checked=true]{--downshift-position:1}
-.bb-downshift .downshift-switch-track{position:relative;display:block;width:92px;height:36px;overflow:hidden;border:1px solid color-mix(in oklab,var(--foreground) 17%,transparent);border-radius:999px;background:color-mix(in oklab,var(--foreground) 10%,var(--background));box-shadow:inset 0 2px 4px rgb(0 0 0/.17),inset 0 -1px 1px rgb(255 255 255/.12);transition:background .25s,border-color .25s}
-.bb-downshift .downshift-switch-symbol{position:absolute;top:5px;display:flex;align-items:center;justify-content:center;width:24px;height:24px;color:var(--muted-foreground);transition:opacity .2s,transform .25s}
-.bb-downshift .downshift-switch-original{right:12px;opacity:calc(1 - var(--downshift-position));transform:translateX(calc(var(--downshift-position) * 6px))}
-.bb-downshift .downshift-switch-downshift{left:12px;opacity:var(--downshift-position);transform:translateX(calc((var(--downshift-position) - 1) * 6px))}
-.bb-downshift .downshift-switch-thumb{position:absolute;top:1px;left:1px;width:32px;height:32px;border:1px solid color-mix(in oklab,var(--foreground) 12%,transparent);border-radius:50%;background:linear-gradient(155deg,color-mix(in oklab,var(--background) 96%,white),color-mix(in oklab,var(--background) 90%,black));box-shadow:0 2px 4px rgb(0 0 0/.23),inset 0 1px 1px rgb(255 255 255/.4);transform:translateX(calc(var(--downshift-position) * var(--downshift-travel)));transition:transform .26s cubic-bezier(.2,.8,.2,1)}
+.bb-downshift .downshift-switch-track{position:relative;display:block;width:56px;height:28px;overflow:hidden;border:1px solid color-mix(in oklab,var(--foreground) 17%,transparent);border-radius:999px;background:color-mix(in oklab,var(--foreground) 10%,var(--background));box-shadow:inset 0 2px 4px rgb(0 0 0/.17),inset 0 -1px 1px rgb(255 255 255/.12);transition:background .25s,border-color .25s}
+.bb-downshift .downshift-switch-symbol{position:absolute;top:5px;display:flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--muted-foreground);transition:opacity .2s,transform .25s}
+.bb-downshift .downshift-switch-symbol svg{width:16px;height:16px}
+.bb-downshift .downshift-switch-original{right:7px;opacity:calc(1 - var(--downshift-position));transform:translateX(calc(var(--downshift-position) * 4px))}
+.bb-downshift .downshift-switch-downshift{left:7px;opacity:var(--downshift-position);transform:translateX(calc((var(--downshift-position) - 1) * 4px))}
+.bb-downshift .downshift-switch-thumb{position:absolute;top:1px;left:1px;width:24px;height:24px;border:1px solid color-mix(in oklab,var(--foreground) 12%,transparent);border-radius:50%;background:linear-gradient(155deg,color-mix(in oklab,var(--background) 96%,white),color-mix(in oklab,var(--background) 90%,black));box-shadow:0 2px 4px rgb(0 0 0/.23),inset 0 1px 1px rgb(255 255 255/.4);transform:translateX(calc(var(--downshift-position) * var(--downshift-travel)));transition:transform .26s cubic-bezier(.2,.8,.2,1)}
 .bb-downshift .bb-downshift-switch[data-dragging] .downshift-switch-thumb,.bb-downshift .bb-downshift-switch[data-dragging] .downshift-switch-symbol{transition:none}
 .bb-downshift[data-warm] .downshift-switch-track{background:linear-gradient(180deg,var(--color-orange-500),var(--color-orange-400));border-color:var(--color-orange-600)}
 .bb-downshift[data-warm] .downshift-switch-symbol{color:var(--color-orange-950)}
 .bb-downshift[data-confirmed=false] .downshift-switch-track{border-style:dashed}
 .bb-downshift .bb-downshift-switch[aria-busy=true] .downshift-switch-thumb{opacity:.85}
-.bb-downshift .bb-downshift-info{width:30px;height:44px;padding:0;border-radius:999px;color:var(--foreground)}
+.bb-downshift .bb-downshift-info{width:24px;height:32px;padding:0;border-radius:999px;color:var(--foreground)}
 .bb-downshift[data-warning] .bb-downshift-info{color:var(--warning,var(--foreground));font-weight:650}
-@media(pointer:coarse){.bb-downshift .bb-downshift-info{width:44px}}
+/* Touch keeps a 44px hit area around the same compact visual. */
+@media(pointer:coarse){.bb-downshift button{min-height:44px}.bb-downshift .bb-downshift-switch{height:44px;padding:8px 2px}.bb-downshift .bb-downshift-info{width:44px;height:44px}}
 @media(prefers-reduced-motion:reduce){.bb-downshift .downshift-switch-track,.bb-downshift .downshift-switch-thumb,.bb-downshift .downshift-switch-symbol{transition:none}}
 .bb-downshift .bb-downshift-details{position:fixed;top:max(56px,calc(env(safe-area-inset-top) + 48px));right:max(12px,env(safe-area-inset-right));width:330px;max-width:calc(100vw - 24px);max-height:min(65dvh,520px);overflow:auto;overscroll-behavior:contain;padding:16px;background:var(--background);color:var(--foreground);border:1px solid color-mix(in srgb,var(--foreground) 20%,transparent);border-radius:14px;box-shadow:0 10px 36px #00000024;white-space:normal;overflow-wrap:anywhere}
 .bb-downshift .bb-downshift-details p{margin:9px 0 0}
@@ -72,6 +74,3 @@
 .bb-downshift-setup [role=alert]{color:var(--destructive);overflow-wrap:anywhere}
 .bb-downshift-setup button{font:inherit;border:1px solid var(--border);border-radius:8px;min-height:44px;padding:10px 14px;background:var(--secondary);color:var(--foreground);cursor:pointer}
 .bb-downshift-setup button:disabled{opacity:.5;cursor:default}
-.bb-downshift .bb-downshift-configuration{margin-top:12px}
-.bb-downshift .bb-downshift-configuration summary{cursor:pointer;min-height:36px}
-.bb-downshift .bb-downshift-configuration .bb-downshift-setup{margin-top:8px}

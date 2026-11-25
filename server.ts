@@ -18,6 +18,8 @@ export const rpcContract=defineRpcContract({
 const missing='Requires the native bb.execution-policy/v1 capability. Stock BB is unsupported. See the package compatibility guide.';
 
 export default async function plugin(bb:BbPluginApi){
+ // Read by the app; BB renders the toggle on the plugin's settings page.
+ bb.settings.define({showHeaderSwitch:{type:'boolean',label:'Show the switch in the page header',description:'Off hides the header switch only. Downshift keeps working, and the app-wide tint still shows while it is on.',default:true}});
  const native=nativeCapability((bb as BbPluginApi&{experimental_executionPolicies?:unknown}).experimental_executionPolicies);
  const stored=await bb.storage.kv.get<unknown>('configuration-v1');
  const parsed=configurationSchema.safeParse(stored);
