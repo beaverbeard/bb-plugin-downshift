@@ -28,9 +28,18 @@ function nativeFixture(){
 }
 test('stock and incomplete capability cannot register or mutate',async()=>{
  for(const cap of [undefined,{}, ...['catalog-profile-validation','consistent-durable-registry'].map(missing=>({describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics.filter(s=>s!==missing)}),register:()=>{throw Error('must not register');}}))]){
-  const h=host(cap);await plugin(h.bb);assert.equal(h.handlers.economy_state!().available,false);assert.match(h.handlers.economy_state!().error,/Stock BB/);
+  const h=host(cap);await plugin(h.bb);assert.equal(h.handlers.economy_state!().available,false);assert.match(h.handlers.economy_state!().error,/stock BB/i);
   await assert.rejects(h.handlers.economy_set!(operation()),/native/);
  }
+});
+test('stock BB persists the model selection without registering or switching',async()=>{
+ const h=host(undefined,null);await plugin(h.bb);
+ assert.deepEqual(await h.handlers.economy_configure!(config),{nativeAvailable:false,configuration:config});
+ assert.deepEqual(h.storage.get('configuration-v1'),config);assert.deepEqual(h.handlers.economy_configuration!(),{nativeAvailable:false,configuration:config});
+ assert.equal(h.handlers.economy_state!().available,false);await assert.rejects(h.handlers.economy_set!(operation()),/native/);
+ await assert.rejects(h.handlers.economy_configure!({...config,primaryModel:'unknown'}));assert.deepEqual(h.storage.get('configuration-v1'),config);
+ const restarted=host(undefined,h.storage.get('configuration-v1') as Configuration);await plugin(restarted.bb);assert.deepEqual(restarted.handlers.economy_configuration!().configuration,config);
+ const n=nativeFixture(),upgraded=host(n.native,h.storage.get('configuration-v1') as Configuration);await plugin(upgraded.bb);assert.equal(n.declarations.length,1);assert.equal(upgraded.handlers.economy_state!().available,true);
 });
 test('first install has no implied model; selection uses any available provider and survives reload',async()=>{
  const n=nativeFixture(),h=host(n.native,null);await plugin(h.bb);

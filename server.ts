@@ -15,7 +15,7 @@ export const rpcContract=defineRpcContract({
  economy_catalog:{input:z.object({providerId:z.string().max(64).nullable()}),output:catalogSchema},
  economy_configure:{input:configurationSchema,output:setupSchema},
 });
-const missing='Requires the native bb.execution-policy/v1 capability. Stock BB is unsupported. See the package compatibility guide.';
+const missing='Switching requires the native bb.execution-policy/v1 capability, which stock BB lacks. A model selection can still be saved. See the package compatibility guide.';
 
 export default async function plugin(bb:BbPluginApi){
  // Read by the app; BB renders the toggle on the plugin's settings page.
@@ -81,7 +81,8 @@ export default async function plugin(bb:BbPluginApi){
   economy_configuration:()=>({nativeAvailable:!!native,configuration}),
   economy_catalog:input=>catalog(input.providerId),
   economy_configure:async input=>{
-   if(!native||disposed)throw new experimental_PluginRpcRefusal({code:'conflict',message:missing});
+   // A selection is plain data: persist it even without the native capability so it survives reloads and applies once native support exists.
+   if(disposed)throw new experimental_PluginRpcRefusal({code:'conflict',message:'Downshift was unloaded.'});
    input=configurationSchema.parse(input);
    checkSelection(input,await catalog(input.providerId));
    return serialize(async()=>{
@@ -93,8 +94,8 @@ export default async function plugin(bb:BbPluginApi){
      await bb.storage.kv.set('configuration-v1',input);
      automatic?.dispose();await automatic?.settled();
      release();configuration=input;register();publish();
-     if(!controller)throw new experimental_PluginRpcRefusal({code:'conflict',message:configurationError});
-     return {nativeAvailable:true,configuration};
+     if(native&&!controller)throw new experimental_PluginRpcRefusal({code:'conflict',message:`Model selection saved, but Downshift could not activate it. ${configurationError}`});
+     return {nativeAvailable:!!native,configuration};
     }finally{reconfiguring=false;}
    });
   },

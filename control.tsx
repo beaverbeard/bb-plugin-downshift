@@ -2,7 +2,7 @@ import {createPortal} from 'react-dom';
 import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {useRpc,useRealtime,useRealtimeConnectionState,useSettings,type PluginAppBuilder} from '@get-bb/plugin-sdk/app';
 import type {rpcContract} from './server';
-import {downshiftLabel,type DownshiftState} from './lib/state';
+import {downshiftLabel,downshiftStatusText,type DownshiftState} from './lib/state';
 import {downshiftFailure,type DownshiftClientError} from './lib/client';
 import {DownshiftPalette,type PaletteView} from './lib/palette';
 import {DownshiftSwitch} from './lib/downshift-switch';
@@ -57,12 +57,12 @@ export function DownshiftControl(){
  if(!host)return null;
  return createPortal(<div ref={root} className="bb-downshift" data-phase={state?.phase??'unknown'} data-warm={palette.warm||undefined} data-confirmed={palette.confirmed} data-warning={warning||undefined}>
   <div className="bb-downshift-pill">
-   <DownshiftSwitch className="bb-downshift-switch" checked={palette.confirmed?!!state?.enabled:palette.warm} disabled={busy||!state?.available} busy={busy} label={`${busy?'Switching…':label}, ${!palette.confirmed?'state unconfirmed':state?.enabled?`on · ${state.profile?.model??'selected model'}`:'off · original profiles'}`} onChange={enabled=>void toggle(enabled)}/>
+   <DownshiftSwitch className="bb-downshift-switch" checked={palette.confirmed?!!state?.enabled:palette.warm} disabled={busy||!state?.available} busy={busy} label={`${busy?'Switching…':label}, ${state&&!state.available&&error?.kind!=='connection'?'not active':!palette.confirmed?'state unconfirmed':state?.enabled?`on · ${state.profile?.model??'selected model'}`:'off · original profiles'}`} onChange={enabled=>void toggle(enabled)}/>
    {warning&&<button type="button" className="bb-downshift-info" aria-label="Downshift details" aria-expanded={details} onClick={()=>setDetails(!details)}>!</button>}
   </div>
   {details&&<section className="bb-downshift-details" aria-label="Downshift status">
    <strong>Downshift</strong>{state?.profile&&<p>{state.profile.model} · {state.profile.reasoningLevel} · {state.profile.serviceTier}</p>}
-   <p role="status">{!palette.confirmed?'State unconfirmed by server':state?.phase==='off'?'Off':state?.phase==='disabling'?'Restoring individual profiles':state?.phase==='enabling'?'Enabling at safe native boundaries':'On'}{state?.enabled?`. Ready: ${state.ready} of ${state.eligible}`:''}</p>
+   <p role="status">{downshiftStatusText(state,palette.confirmed,error?.kind==='connection')}{state?.enabled?`. Ready: ${state.ready} of ${state.eligible}`:''}</p>
    {(error||state?.error)&&<p role="alert">{error?.message??state?.error}</p>}
    {state?.pending.length? <p>Waiting for current turns to finish: {state.pending.length}. Work continues.</p>:null}
    {state?.unavailable.map((item,index)=><p key={`host-${item.threadId}-${index}`} role="alert">{item.hostId??'Host'}: {item.reason}</p>)}
