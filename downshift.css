@@ -28,6 +28,7 @@
 .bb-downshift .bb-downshift-details p,.bb-downshift-panel p{margin:9px 0 0}
 .bb-downshift .bb-downshift-details [role=alert],.bb-downshift-panel [role=alert]{font-weight:550}
 /* Sidebar footer disclosure: full width of the host card, same compact switch. */
+.bb-downshift.bb-downshift-panel:focus{outline:none}
 .bb-downshift.bb-downshift-panel{max-width:none;padding:12px;white-space:normal;overflow-wrap:anywhere}
 .bb-downshift-panel .bb-downshift-panel-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .bb-downshift .bb-downshift-note{font-size:12px;opacity:.75}

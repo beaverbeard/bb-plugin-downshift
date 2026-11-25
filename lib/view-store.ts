@@ -3,7 +3,7 @@ import type {DownshiftClientError} from './client';
 import type {PaletteView} from './palette';
 
 /** What the always-mounted overlay knows; host-rendered surfaces (sidebar footer icon and panel) read it here. */
-export type DownshiftView={state:DownshiftState|null;palette:PaletteView;busy:boolean;error:DownshiftClientError|null;warning:boolean;switchLabel:string;toggle(enabled:boolean):void};
+export type DownshiftView={state:DownshiftState|null;palette:PaletteView;busy:boolean;error:DownshiftClientError|null;warning:boolean;toggle(enabled:boolean):void};
 export type Store<T>={get():T;set(next:T):void;subscribe(listener:()=>void):()=>void};
 export function createStore<T>(initial:T):Store<T>{
  let value=initial;const listeners=new Set<()=>void>();

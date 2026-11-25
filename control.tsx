@@ -1,5 +1,5 @@
 import {createPortal} from 'react-dom';
-import {useCallback,useEffect,useLayoutEffect,useRef,useState,useSyncExternalStore} from 'react';
+import {useCallback,useEffect,useLayoutEffect,useId,useRef,useState,useSyncExternalStore} from 'react';
 import {useRpc,useRealtime,useRealtimeConnectionState,useSettings,type PluginAppBuilder} from '@get-bb/plugin-sdk/app';
 import type {rpcContract} from './server';
 import {downshiftLabel,downshiftStatusText,type DownshiftState} from './lib/state';
@@ -60,9 +60,8 @@ export function DownshiftControl(){
  const warning=!!error||!!state?.error||issueCount>0||automaticIssue||!palette.confirmed;
  const label=palette.warm&&!palette.confirmed?'Downshift · ?':downshiftLabel(state);
  const switchLabel=`${busy?'Switching…':label}, ${state&&!state.available&&error?.kind!=='connection'?'not active':!palette.confirmed?'state unconfirmed':state?.enabled?`on · ${state.profile?.model??'selected model'}`:'off · original profiles'}`;
- const toggleRef=useRef(toggle);toggleRef.current=toggle;
- const sidebarToggle=useCallback((enabled:boolean)=>void toggleRef.current(enabled,false),[]);
- const view:DownshiftView={state,palette,busy,error,warning,switchLabel,toggle:sidebarToggle};
+ // Published after commit, so the sidebar's toggle always carries the configuration and generation it displays.
+ const view:DownshiftView={state,palette,busy,error,warning,toggle:enabled=>void toggle(enabled,false)};
  useEffect(()=>{downshiftView.set(view);});
  useEffect(()=>()=>downshiftView.set(null),[]);
  if(!host)return null;
@@ -74,10 +73,10 @@ export function DownshiftControl(){
   {details&&<section className="bb-downshift-details" aria-label="Downshift status"><strong>Downshift</strong><DownshiftDetails view={view}/></section>}
  </div>,host);
 }
-function DownshiftDetails({view:{state,palette,error}}:{view:DownshiftView}){
+function DownshiftDetails({view:{state,palette,error},ids}:{view:DownshiftView;ids?:{profile:string;status:string}}){
  return <>
-  {state?.profile&&<p>{state.profile.model} · {state.profile.reasoningLevel} · {state.profile.serviceTier}</p>}
-  <p role="status">{downshiftStatusText(state,palette.confirmed,error?.kind==='connection')}{state?.enabled?`. Ready: ${state.ready} of ${state.eligible}`:''}</p>
+  {state?.profile&&<p id={ids?.profile}>{state.profile.model} · {state.profile.reasoningLevel} · {state.profile.serviceTier}</p>}
+  <p id={ids?.status} role="status">{downshiftStatusText(state,palette.confirmed,error?.kind==='connection')}{state?.enabled?`. Ready: ${state.ready} of ${state.eligible}`:''}</p>
   {(error||state?.error)&&<p role="alert">{error?.message??state?.error}</p>}
   {state?.pending.length? <p>Waiting for current turns to finish: {state.pending.length}. Work continues.</p>:null}
   {state?.unavailable.map((item,index)=><p key={`host-${item.threadId}-${index}`} role="alert">{item.hostId??'Host'}: {item.reason}</p>)}
@@ -96,12 +95,15 @@ export function DownshiftModeIcon({className}:{className?:string}){
 }
 /** Sidebar footer disclosure: the same switch and status as the header, for when the header switch is hidden or out of reach. */
 export function DownshiftSidebarPanel(){
- const view=useDownshiftView();
- if(!view)return <div className="bb-downshift bb-downshift-panel"><p role="status">Loading Downshift…</p></div>;
+ const view=useDownshiftView(),panel=useRef<HTMLDivElement>(null),id=useId(),ids={profile:`${id}-profile`,status:`${id}-status`};
+ // BB renders the panel before its footer trigger and leaves focus on the trigger; move focus in so Tab reaches the switch.
+ useEffect(()=>{const node=panel.current;(node?.querySelector<HTMLButtonElement>('.bb-downshift-switch:not(:disabled)')??node)?.focus();},[]);
+ if(!view)return <div ref={panel} tabIndex={-1} className="bb-downshift bb-downshift-panel"><p role="status">Loading Downshift…</p></div>;
  const {state,palette,busy,warning}=view;
- return <div className="bb-downshift bb-downshift-panel" data-phase={state?.phase??'unknown'} data-warm={palette.warm||undefined} data-confirmed={palette.confirmed} data-warning={warning||undefined}>
-  <div className="bb-downshift-panel-row"><strong>Downshift</strong><DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||!state?.available} busy={busy} label={view.switchLabel} onChange={view.toggle}/></div>
-  <DownshiftDetails view={view}/>
+ // A stable name; aria-checked carries on or off, and the model and phase come from the described-by text.
+ return <div ref={panel} tabIndex={-1} className="bb-downshift bb-downshift-panel" data-phase={state?.phase??'unknown'} data-warm={palette.warm||undefined} data-confirmed={palette.confirmed} data-warning={warning||undefined}>
+  <div className="bb-downshift-panel-row"><strong>Downshift</strong><DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||!state?.available} busy={busy} label="Downshift" describedBy={`${ids.profile} ${ids.status}`} onChange={view.toggle}/></div>
+  <DownshiftDetails view={view} ids={ids}/>
  </div>;
 }
 const modeIcon='downshift-mode';
