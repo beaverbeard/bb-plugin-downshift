@@ -26,7 +26,7 @@ export default async function plugin(bb:BbPluginApi){
  let configuration:Configuration|null=parsed.success?parsed.data:null;
  let controller:NativeController|null=null,unsubscribe=()=>{},automatic:AutomaticDownshift|null=null;
  let configurationError=native?'Choose your main model and a Downshift model in Downshift settings.':missing;
- let latestQuota:QuotaSnapshot|null=null,quotaSignal:AbortSignal|null=null,disposed=false,reconfiguring=false,epoch=0,manualOffPending=0;
+ let latestQuota:QuotaSnapshot|null=null,quotaSignal:AbortSignal|null=null,disposed=false,reconfiguring=false,epoch=0,manualOffPending=0,autoPaused=false;
  let readingAbort=new AbortController();
  let operations:Promise<unknown>=Promise.resolve();
  const serialize=<T,>(action:()=>Promise<T>):Promise<T>=>{const result=operations.then(action);operations=result.catch(()=>{});return result;};
@@ -41,13 +41,16 @@ export default async function plugin(bb:BbPluginApi){
   try{controller.set(input);return status();}
   catch(error){if(error instanceof Error&&(error as Error&{code?:string}).code==='execution_policy_conflict')throw new experimental_PluginRpcRefusal({code:'conflict',message:error.message});throw error;}
  };
- const release=()=>{epoch++;readingAbort.abort();readingAbort=new AbortController();automatic?.dispose();automatic=null;unsubscribe();unsubscribe=()=>{};controller?.release();controller=null;latestQuota=null;};
+ const release=()=>{epoch++;readingAbort.abort();readingAbort=new AbortController();automatic?.dispose();automatic=null;autoPaused=false;unsubscribe();unsubscribe=()=>{};controller?.release();controller=null;latestQuota=null;};
  const register=()=>{
   if(!native||!configuration||disposed)return;
   const config=configuration,id=policyId(config);
   try{
-   const handle=native.register({id,providerId:config.providerId,profile:config.profile});controller=handle;
-   if(!handle||!['status','set','subscribe','release'].every(k=>typeof(handle as unknown as Record<string,unknown>)[k]==='function'))throw Error('Invalid native controller');
+   const handle=native.register({id,providerId:config.providerId,profile:config.profile});
+   // Validate before adopting the handle: release() on a malformed handle would throw out of the catch below and abort plugin startup.
+   // A rejected handle that can still release its registration must do so, or it holds the provider until unload.
+   if(!handle||!['status','set','subscribe','release'].every(k=>typeof(handle as unknown as Record<string,unknown>)[k]==='function')){const rejected=handle as {release?:unknown}|null;if(typeof rejected?.release==='function')try{rejected.release();}catch{}throw Error('Invalid native controller');}
+   controller=handle;
    unsubscribe=handle.subscribe(publish);
    automatic=new AutomaticDownshift({
     load:async()=>(await bb.storage.kv.get<AutomaticRecord>(`automatic-v2:${config.providerId}`))??(await bb.storage.kv.get<unknown>(`automatic-v1:${config.providerId}`))??null,
@@ -105,7 +108,8 @@ export default async function plugin(bb:BbPluginApi){
    if(!configuration||input.configurationId!==configurationId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});
    const current=automatic;if(!input.enabled)manualOffPending++;
    try{
-   if(!input.enabled&&current)await current.suppress(latestQuota);
+   // OFF restores original profiles, so a failed suppression record must not block it. With auto on, pause auto for this load instead so it cannot re-enable.
+   if(!input.enabled&&current)await current.suppress(latestQuota).catch(()=>{if(configuration?.autoEnabled&&automatic===current){current.dispose();autoPaused=true;current.view={status:'error',message:'Manual off could not be saved. Automatic activation is paused until Downshift reloads.'};}});
    return await serialize(async()=>{if(!configuration||input.configurationId!==configurationId(configuration))throw new experimental_PluginRpcRefusal({code:'conflict',message:'The model selection changed. Refresh Downshift before switching.'});const {configurationId:_selectionId,...operation}=input;const next=set(operation);publish();return next;});
    }finally{if(!input.enabled)manualOffPending--;}
   },
@@ -115,7 +119,8 @@ export default async function plugin(bb:BbPluginApi){
    quotaSignal=signal;
    while(!signal.aborted&&!disposed){
     const config=configuration,observer=automatic,version=epoch;
-    if(config?.autoEnabled&&observer){
+    // A paused observer keeps its warning; quota polling must not replace it.
+    if(config?.autoEnabled&&observer&&!autoPaused){
      const {quota,issue}=await readNativeQuota(bb.sdk,config,AbortSignal.any([signal,readingAbort.signal,AbortSignal.timeout(12_000)]));
      if(signal.aborted||disposed)return;
      if(version===epoch&&configuration===config&&!reconfiguring){latestQuota=quota;await observer.observe(quota);if(!quota&&issue)observer.view={status:'stale',message:issue};publish();}

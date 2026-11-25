@@ -7,3 +7,7 @@ export function downshiftFailure(error:unknown):{retry:boolean;error:DownshiftCl
   ?{retry:false,error:{kind:'operation',message:error.message}}
   :{retry:true,error:{kind:'operation',message:'Switch not confirmed. Retry checks the same operation.'}};
 }
+export type SwitchRequest={enabled:boolean;expectedGeneration:number;requestId:string;configurationId:string};
+/** Retry an uncertain request with the SAME UUID, but only in the same direction; an opposite click is a new operation. */
+export const switchRequest=(retained:SwitchRequest|null,enabled:boolean,generation:number,configurationId:string,uuid:()=>string=()=>crypto.randomUUID()):SwitchRequest=>
+ retained?.enabled===enabled&&retained.configurationId===configurationId?retained:{enabled,expectedGeneration:generation,requestId:uuid(),configurationId};

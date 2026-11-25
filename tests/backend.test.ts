@@ -71,4 +71,24 @@ test('forged models, reasoning, service tiers and unsupported automatic quotas f
 test('failed native subscription releases the handle and preserves the registration error',async()=>{
  let releases=0;const h=host({describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics}),register:()=>({status:()=>({}),set:()=>({}),subscribe:()=>{throw Error('failed');},release:()=>releases++})});await plugin(h.bb);assert.equal(releases,1);assert.match(h.handlers.economy_state!().error,/registration failed: failed/);
 });
+test('a native handle without release() reports a registration error instead of aborting startup',async()=>{
+ const h=host({describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics}),register:()=>({status:()=>({}),set:()=>({}),subscribe:()=>()=>{}})});await plugin(h.bb);
+ assert.match(h.handlers.economy_state!().error,/registration failed: Invalid native controller/);assert.ok(h.handlers.economy_configuration);
+});
+test('a rejected native handle that can release is released',async()=>{
+ let releases=0;
+ const h=host({describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics}),register:()=>({status:()=>({}),subscribe:()=>()=>{},release:()=>{releases++;}})});await plugin(h.bb);
+ assert.match(h.handlers.economy_state!().error,/registration failed: Invalid native controller/);assert.equal(releases,1);
+});
+test('manual OFF still restores profiles when the suppression record cannot be saved',async()=>{
+ for(const autoEnabled of [false,true]){
+  const n=nativeFixture(),selected={...config,autoEnabled},h=host(n.native,selected);
+  const set=h.bb.storage.kv.set;(h.bb.storage.kv as {set:typeof set}).set=async(key,value)=>{if(key.startsWith('automatic-'))throw Error('disk full');return set(key,value);};
+  await plugin(h.bb);await h.handlers.economy_set!(operation(selected));
+  const off=await h.handlers.economy_set!({...operation(selected),enabled:false,expectedGeneration:1,requestId:'1d1c4c11-7d0e-4a4e-9a51-2f8b8c1f3d6e'});
+  assert.equal(off.enabled,false);assert.equal(n.mutations,2);
+  const automatic=h.handlers.economy_state!().automatic;
+  if(autoEnabled)assert.equal(automatic?.status,'error');else assert.equal(automatic,undefined);
+ }
+});
 test('package uses public SDK imports only',async()=>{const result=await experimental_scanPublicSdkOnly(process.cwd(),{allow:[/^react$/, /^react-dom$/]});assert.deepEqual(result.violations,[]);assert.deepEqual(result.privateDependencies,[]);});
