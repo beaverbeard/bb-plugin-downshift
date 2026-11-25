@@ -66,6 +66,11 @@ test('a native handle without release() reports a registration error instead of 
  const h=host({describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics}),register:()=>({status:()=>({}),set:()=>({}),subscribe:()=>()=>{}})});await plugin(h.bb);
  assert.match(h.handlers.economy_state!().error,/registration failed: Invalid native controller/);assert.ok(h.handlers.economy_configuration);
 });
+test('a rejected native handle that can release is released',async()=>{
+ let releases=0;
+ const h=host({describe:()=>({protocol:nativeProtocol,semantics:requiredSemantics}),register:()=>({status:()=>({}),subscribe:()=>()=>{},release:()=>{releases++;}})});await plugin(h.bb);
+ assert.match(h.handlers.economy_state!().error,/registration failed: Invalid native controller/);assert.equal(releases,1);
+});
 test('manual OFF still restores profiles when the suppression record cannot be saved',async()=>{
  for(const autoEnabled of [false,true]){
   const n=nativeFixture(),selected={...config,autoEnabled},h=host(n.native,selected);
