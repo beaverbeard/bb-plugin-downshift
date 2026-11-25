@@ -103,7 +103,7 @@ export function DownshiftSidebarPanel(){
  const {state,palette,busy,warning}=view;
  // A stable name; aria-checked carries on or off, and the model and phase come from the described-by text.
  return <div ref={panel} tabIndex={-1} className="bb-downshift bb-downshift-panel" data-phase={state?.phase??'unknown'} data-warm={palette.warm||undefined} data-confirmed={palette.confirmed} data-warning={warning||undefined}>
-  <div className="bb-downshift-panel-row"><strong>Downshift</strong><DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||!state?.available} busy={busy} label="Downshift" describedBy={`${ids.profile} ${ids.status}`} onChange={view.toggle}/></div>
+  <div className="bb-downshift-panel-row"><strong>Downshift</strong><DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||!state?.available} busy={busy} label="Downshift" describedBy={state?.profile?`${ids.profile} ${ids.status}`:ids.status} onChange={view.toggle}/></div>
   <DownshiftDetails view={view} ids={ids}/>
  </div>;
 }
