@@ -15,8 +15,11 @@ export function DownshiftControl(){
  useEffect(()=>{const timer=setInterval(()=>repaint(value=>value+1),30000);return()=>clearInterval(timer);},[]);
  const [host,setHost]=useState<HTMLElement|null>(null);
  // Hiding the header switch keeps the state, the palette and the app-wide tint; it only skips the portal.
- const shown=useSettings().values?.showHeaderSwitch!==false;
+ // Wait for the saved value so a hidden switch does not flash in on a cold load.
+ const settings=useSettings(),shown=!settings.isLoading&&settings.values?.showHeaderSwitch!==false;
  useEffect(()=>{
+  // A popup left open, or queued by a switch that finished while hidden, must not reappear with the header.
+  setDetails(false);
   if(!shown){setHost(null);return;}
   const target=document.createElement('div');target.className='bb-downshift-host';target.dataset.bbPluginRoot='';target.dataset.bbPlugin='downshift';
   let frame=0;
