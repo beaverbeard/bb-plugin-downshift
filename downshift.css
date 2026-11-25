@@ -25,8 +25,11 @@
 @media(pointer:coarse){.bb-downshift button{min-height:44px}.bb-downshift .bb-downshift-switch{height:44px;padding:8px 2px}.bb-downshift .bb-downshift-info{width:44px;height:44px}}
 @media(prefers-reduced-motion:reduce){.bb-downshift .downshift-switch-track,.bb-downshift .downshift-switch-thumb,.bb-downshift .downshift-switch-symbol{transition:none}}
 .bb-downshift .bb-downshift-details{position:fixed;top:max(56px,calc(env(safe-area-inset-top) + 48px));right:max(12px,env(safe-area-inset-right));width:330px;max-width:calc(100vw - 24px);max-height:min(65dvh,520px);overflow:auto;overscroll-behavior:contain;padding:16px;background:var(--background);color:var(--foreground);border:1px solid color-mix(in srgb,var(--foreground) 20%,transparent);border-radius:14px;box-shadow:0 10px 36px #00000024;white-space:normal;overflow-wrap:anywhere}
-.bb-downshift .bb-downshift-details p{margin:9px 0 0}
-.bb-downshift .bb-downshift-details [role=alert]{font-weight:550}
+.bb-downshift .bb-downshift-details p,.bb-downshift-panel p{margin:9px 0 0}
+.bb-downshift .bb-downshift-details [role=alert],.bb-downshift-panel [role=alert]{font-weight:550}
+/* Sidebar footer disclosure: full width of the host card, same compact switch. */
+.bb-downshift.bb-downshift-panel{max-width:none;padding:12px;white-space:normal;overflow-wrap:anywhere}
+.bb-downshift-panel .bb-downshift-panel-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .bb-downshift .bb-downshift-note{font-size:12px;opacity:.75}
 
 /* A removable app-wide semantic-token layer.
