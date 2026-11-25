@@ -79,7 +79,8 @@ export default async function plugin(bb:BbPluginApi){
   economy_configuration:()=>({nativeAvailable:!!native,configuration}),
   economy_catalog:input=>catalog(input.providerId),
   economy_configure:async input=>{
-   if(!native||disposed)throw new experimental_PluginRpcRefusal({code:'conflict',message:missing});
+   // A selection is plain data: persist it even without the native capability so it survives reloads and applies once native support exists.
+   if(disposed)throw new experimental_PluginRpcRefusal({code:'conflict',message:'Downshift was unloaded.'});
    input=configurationSchema.parse(input);
    checkSelection(input,await catalog(input.providerId));
    return serialize(async()=>{
@@ -91,8 +92,8 @@ export default async function plugin(bb:BbPluginApi){
      await bb.storage.kv.set('configuration-v1',input);
      automatic?.dispose();await automatic?.settled();
      release();configuration=input;register();publish();
-     if(!controller)throw new experimental_PluginRpcRefusal({code:'conflict',message:configurationError});
-     return {nativeAvailable:true,configuration};
+     if(native&&!controller)throw new experimental_PluginRpcRefusal({code:'conflict',message:`Model selection saved, but Downshift could not activate it. ${configurationError}`});
+     return {nativeAvailable:!!native,configuration};
     }finally{reconfiguring=false;}
    });
   },

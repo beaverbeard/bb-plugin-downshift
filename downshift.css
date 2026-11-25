@@ -69,6 +69,7 @@
 .bb-downshift-setup .bb-downshift-check{display:flex;align-items:center;gap:8px}
 .bb-downshift-setup .bb-downshift-check input{width:20px;height:20px;accent-color:var(--primary);flex:none}
 .bb-downshift-setup p{margin:0;font-size:13px;line-height:1.5}
+.bb-downshift-setup .bb-downshift-note{opacity:.75}
 .bb-downshift-setup [role=alert]{color:var(--destructive);overflow-wrap:anywhere}
 .bb-downshift-setup button{font:inherit;border:1px solid var(--border);border-radius:8px;min-height:44px;padding:10px 14px;background:var(--secondary);color:var(--foreground);cursor:pointer}
 .bb-downshift-setup button:disabled{opacity:.5;cursor:default}
