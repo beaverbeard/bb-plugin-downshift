@@ -5,7 +5,7 @@ import {downshiftStatusText,unavailableDownshift,type DownshiftState} from '../l
 
 const on:DownshiftState={...unavailableDownshift(),available:true,error:null,phase:'on',enabled:true,configurationId:'c'};
 test('status text reports an unavailable server answer instead of a lost confirmation',()=>{
- assert.equal(downshiftStatusText(unavailableDownshift('Stock BB'),false,false),'Not active');
+ assert.equal(downshiftStatusText(unavailableDownshift('Stock BB'),false,false),'Switching unavailable');
  assert.equal(downshiftStatusText(unavailableDownshift('Stock BB'),false,true),'State unconfirmed by server');
  assert.equal(downshiftStatusText(null,false,false),'State unconfirmed by server');
  assert.equal(downshiftStatusText(on,false,false),'State unconfirmed by server');

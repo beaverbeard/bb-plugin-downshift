@@ -10,7 +10,8 @@ both your main and Downshift profiles within the same provider.
 The package includes an implemented, reviewable native integration for the exact
 BB source revision in [NATIVE-INTEGRATION.md](compatibility/NATIVE-INTEGRATION.md).
 This capability has not shipped upstream. Installing the UI alone does not
-change execution; stock BB keeps the switch disabled.
+change execution. On stock BB the control opens its unavailable status instead
+of switching models.
 
 ## Screenshots
 
@@ -91,6 +92,12 @@ Click, tap or swipe it; Space, Enter and arrow keys work from the keyboard.
 OFF follows the selected BB theme; ON has an orange track. The removable warm
 tint follows that same theme. Cached last-confirmed ON stays visibly unconfirmed
 until the server responds. Warnings expose details when needed. All text is English.
+
+If the controller reports that switching is unavailable, either control opens
+its status. **Clear saved appearance** removes an unconfirmed orange tint from
+this browser, including after a reload. It sends no model-switch command and is
+not an OFF receipt. Confirmed ON and profile restoration cannot be dismissed this
+way. Switching still requires the compatible native integration.
 
 A compact switch is available in the header and in the sidebar footer. Turn off
 **Show the switch in the page header** in Downshift settings to keep only the

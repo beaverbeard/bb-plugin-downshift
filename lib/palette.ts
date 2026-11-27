@@ -24,5 +24,11 @@ export class DownshiftPalette {
   this.paint();return this.view;
  }
  unconfirm(){this.view={...this.view,confirmed:false};this.paint();return this.view;}
+ /** Explicit browser-only dismissal; never a native OFF receipt. */
+ dismissSavedAppearance(){
+  if(this.view.confirmed)return false;
+  try{this.cache?.removeItem(downshiftPaletteCacheKey);}catch{return false;}
+  this.view={warm:false,confirmed:false};this.paint();return true;
+ }
  dispose(){this.root.removeAttribute(downshiftPaletteAttribute);}
 }

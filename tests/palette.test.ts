@@ -17,3 +17,33 @@ test('active phases tint immediately; disabling retains orange until a successfu
 test('cached ON paints locally as unconfirmed; unavailable/error never invent successful OFF',()=>{const f=fixture(JSON.stringify({version:1,active:true,generation:6}));assert.deepEqual(f.palette.view,{warm:true,confirmed:false});assert.equal(f.attrs.get(downshiftPaletteAttribute),'unconfirmed');f.palette.confirm(unavailableDownshift());assert.equal(f.palette.view.warm,true);f.palette.confirm(state({phase:'on',enabled:true}));f.palette.unconfirm();assert.deepEqual(f.palette.view,{warm:true,confirmed:false});f.palette.confirm(state());assert.equal(f.attrs.size,0);});
 test('unmount removes only owned attribute; reload restores cache honestly, then OFF clears it',()=>{const f=fixture();f.attrs.set('class','dark');f.palette.confirm(state({phase:'on',enabled:true}));f.palette.dispose();assert.deepEqual([...f.attrs],[['class','dark']]);const reload=new DownshiftPalette(f.root,f.cache);assert.equal(f.attrs.get(downshiftPaletteAttribute),'unconfirmed');reload.confirm(state());reload.dispose();assert.deepEqual([...f.attrs],[['class','dark']]);assert.equal(f.store.size,0);});
 test('malformed/untrusted/blocked cache cannot turn on either presentation or server',()=>{for(const raw of ['bad','{}','{"version":1,"active":true,"generation":-1}','{"version":2,"active":true,"generation":0}'])assert.equal(fixture(raw).palette.view.warm,false);const f=fixture();const blocked={getItem(){throw Error('blocked');},setItem(){throw Error('blocked');},removeItem(){throw Error('blocked');}};const p=new DownshiftPalette(f.root,blocked);p.confirm(state({phase:'on',enabled:true}));p.confirm(state());assert.equal(f.attrs.size,0);});
+test('explicit dismissal after cached ON and unavailable clears only appearance and survives reload',()=>{
+ const f=fixture(JSON.stringify({version:1,active:true,generation:6}));
+ f.attrs.set('class','dark');f.attrs.set('data-other-plugin','confirmed');f.store.set('bb.theme','dark');
+ f.palette.confirm(unavailableDownshift());
+ assert.equal(f.palette.dismissSavedAppearance(),true);
+ assert.deepEqual(f.palette.view,{warm:false,confirmed:false});
+ assert.deepEqual([...f.attrs],[['class','dark'],['data-other-plugin','confirmed']]);
+ assert.deepEqual([...f.store],[['bb.theme','dark']]);
+ const reload=new DownshiftPalette(f.root,f.cache);reload.confirm(unavailableDownshift());
+ assert.deepEqual(reload.view,{warm:false,confirmed:false});
+ reload.confirm(state({phase:'on',enabled:true,generation:7}));
+ assert.deepEqual(reload.view,{warm:true,confirmed:true});
+ assert.equal(f.attrs.get(downshiftPaletteAttribute),'confirmed');
+});
+test('confirmed active and restoring phases cannot be dismissed as local appearance',()=>{
+ for(const phase of ['enabling','on','disabling'] as const){
+  const f=fixture();f.palette.confirm(state({phase,enabled:phase!=='disabling',generation:3}));
+  const saved=f.store.get(downshiftPaletteCacheKey);
+  assert.equal(f.palette.dismissSavedAppearance(),false);
+  assert.deepEqual(f.palette.view,{warm:true,confirmed:true});
+  assert.equal(f.attrs.get(downshiftPaletteAttribute),'confirmed');assert.equal(f.store.get(downshiftPaletteCacheKey),saved);
+ }
+});
+test('failed cache removal retains the unconfirmed warning instead of claiming dismissal',()=>{
+ const f=fixture(JSON.stringify({version:1,active:true,generation:6}));
+ const palette=new DownshiftPalette(f.root,{...f.cache,removeItem(){throw Error('blocked');}});
+ palette.confirm(unavailableDownshift());assert.equal(palette.dismissSavedAppearance(),false);
+ assert.deepEqual(palette.view,{warm:true,confirmed:false});
+ assert.equal(f.attrs.get(downshiftPaletteAttribute),'unconfirmed');assert.equal(f.store.has(downshiftPaletteCacheKey),true);
+});

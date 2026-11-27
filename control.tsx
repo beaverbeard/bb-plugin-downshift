@@ -6,7 +6,7 @@ import {downshiftLabel,downshiftStatusText,type DownshiftState} from './lib/stat
 import {downshiftFailure,switchRequest,type DownshiftClientError,type SwitchRequest} from './lib/client';
 import {DownshiftPalette,type PaletteView} from './lib/palette';
 import {DownshiftSwitch,DownshiftSymbol} from './lib/downshift-switch';
-import {downshiftView,switchChecked,type DownshiftView} from './lib/view-store';
+import {downshiftView,switchChecked,controllerUnavailable,canDismissSavedAppearance,type DownshiftView} from './lib/view-store';
 import {headerInsertionPoint,headerParent,releaseEmptyHeaderDock} from './lib/header-dock';
 import {DownshiftSetup} from './setup';
 import './downshift.css';
@@ -33,11 +33,12 @@ export function DownshiftControl(){
  },[shown]);
  const paletteOwner=useRef<DownshiftPalette|null>(null);
  const [palette,setPalette]=useState<PaletteView>({warm:false,confirmed:false});
+ const [appearanceMessage,setAppearanceMessage]=useState<string|null>(null);
  useLayoutEffect(()=>{let cache:Storage|null=null;try{cache=window.localStorage;}catch{}
   const owner=new DownshiftPalette(document.documentElement,cache);paletteOwner.current=owner;setPalette({...owner.view});
   return()=>{owner.dispose();paletteOwner.current=null;};
  },[]);
- const acceptState=useCallback((next:DownshiftState)=>{if(mutation.current&&mutation.current.configurationId!==next.configurationId)mutation.current=null;setState(next);const view=paletteOwner.current?.confirm(next);if(view)setPalette({...view});},[]);
+ const acceptState=useCallback((next:DownshiftState)=>{if(mutation.current&&mutation.current.configurationId!==next.configurationId)mutation.current=null;setState(next);if(next.available)setAppearanceMessage(null);const view=paletteOwner.current?.confirm(next);if(view)setPalette({...view});},[]);
  const rpc=useRpc<typeof rpcContract>();const connection=useRealtimeConnectionState();
  const [state,setState]=useState<DownshiftState|null>(null),[busy,setBusy]=useState(false),[details,setDetails]=useState(false),[error,setError]=useState<DownshiftClientError|null>(null);
  const mutation=useRef<SwitchRequest|null>(null);
@@ -60,30 +61,41 @@ export function DownshiftControl(){
  const automaticIssue=state?.automatic?.status==='stale'||state?.automatic?.status==='error';
  const warning=!!error||!!state?.error||issueCount>0||automaticIssue||!palette.confirmed;
  const label=palette.warm&&!palette.confirmed?'Downshift · ?':downshiftLabel(state);
- const switchLabel=`${busy?'Switching…':label}, ${state&&!state.available&&error?.kind!=='connection'?'not active':!palette.confirmed?'state unconfirmed':state?.enabled?`on · ${state.profile?.model??'selected model'}`:'off · original profiles'}`;
+ const unavailable=controllerUnavailable({state});
+ const switchLabel=unavailable?'Downshift unavailable. Open details':`${busy?'Switching…':label}, ${!palette.confirmed?'state unconfirmed':state?.enabled?`on · ${state.profile?.model??'selected model'}`:'off · original profiles'}`;
+ function dismissSavedAppearance(){
+  if(!canDismissSavedAppearance({state,palette,busy}))return;
+  const owner=paletteOwner.current;if(!owner)return;
+  if(owner.dismissSavedAppearance()){setPalette({...owner.view});setAppearanceMessage('Saved appearance cleared. Switching remains unavailable.');}
+  else setAppearanceMessage('The saved appearance could not be cleared. No model switch was attempted.');
+ }
  // Published after commit, so the sidebar's toggle always carries the configuration and generation it displays.
- const view:DownshiftView={state,palette,busy,error,warning,toggle:enabled=>void toggle(enabled,false)};
+ const view:DownshiftView={state,palette,busy,error,warning,appearanceMessage,dismissSavedAppearance,toggle:enabled=>void toggle(enabled,false)};
  useEffect(()=>{downshiftView.set(view);});
  useEffect(()=>()=>downshiftView.set(null),[]);
  if(!host)return null;
  return createPortal(<div ref={root} className="bb-downshift" data-phase={state?.phase??'unknown'} data-warm={palette.warm||undefined} data-confirmed={palette.confirmed} data-warning={warning||undefined}>
   <div className="bb-downshift-pill">
-   <DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||!state?.available} busy={busy} label={switchLabel} onChange={enabled=>void toggle(enabled)}/>
+   <DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||(!state?.available&&!unavailable)} busy={busy} label={switchLabel} onChange={enabled=>void toggle(enabled)} onUnavailable={unavailable?()=>setDetails(value=>!value):undefined} expanded={details}/>
    {warning&&<button type="button" className="bb-downshift-info" aria-label="Downshift details" aria-expanded={details} onClick={()=>setDetails(!details)}>!</button>}
   </div>
   {details&&<section className="bb-downshift-details" aria-label="Downshift status"><strong>Downshift</strong><DownshiftDetails view={view}/></section>}
  </div>,host);
 }
-function DownshiftDetails({view:{state,palette,error},ids}:{view:DownshiftView;ids?:{profile:string;status:string}}){
+function DownshiftDetails({view,ids}:{view:DownshiftView;ids?:{profile:string;status:string}}){
+ const {state,palette,error,appearanceMessage,dismissSavedAppearance}=view;
+ const unavailable=controllerUnavailable(view);
  return <>
-  {state?.profile&&<p id={ids?.profile}>{state.profile.model} · {state.profile.reasoningLevel} · {state.profile.serviceTier}</p>}
-  <p id={ids?.status} role="status">{downshiftStatusText(state,palette.confirmed,error?.kind==='connection')}{state?.enabled?`. Ready: ${state.ready} of ${state.eligible}`:''}</p>
+  {state?.profile&&<p id={ids?.profile}>{unavailable?'Saved profile: ':''}{state.profile.model} · {state.profile.reasoningLevel} · {state.profile.serviceTier}</p>}
+  <p id={ids?.status} role="status" tabIndex={-1}>{downshiftStatusText(state,palette.confirmed,error?.kind==='connection')}{state?.available&&state.enabled?`. Ready: ${state.ready} of ${state.eligible}`:''}</p>
+  {canDismissSavedAppearance(view)&&<><p>The saved orange appearance does not confirm an active mode. Clearing it changes only this browser; it does not switch models.</p><button type="button" className="bb-downshift-dismiss" data-downshift-clear onClick={dismissSavedAppearance}>Clear saved appearance</button></>}
+  {unavailable&&appearanceMessage&&<p role="status">{appearanceMessage}</p>}
   {(error||state?.error)&&<p role="alert">{error?.message??state?.error}</p>}
   {state?.pending.length? <p>Waiting for current turns to finish: {state.pending.length}. Work continues.</p>:null}
   {state?.unavailable.map((item,index)=><p key={`host-${item.threadId}-${index}`} role="alert">{item.hostId??'Host'}: {item.reason}</p>)}
   {state?.conflicts.map((item,index)=><p key={`conflict-${item.threadId}-${index}`} role="alert">{item.reason}</p>)}
   <p>Change models on the Downshift page in Plugins.</p>
-  <p>Original settings are preserved. Turn Downshift off to change them.</p>
+  {!unavailable&&<p>Original settings are preserved. Turn Downshift off to change them.</p>}
   {state?.automatic&&<p role="status">{state.automatic.message}</p>}
   <p className="bb-downshift-note">A smaller model can reduce quota use; shared subscription limits still apply.</p>
  </>;
@@ -101,9 +113,11 @@ export function DownshiftSidebarPanel(){
  useEffect(()=>{const node=panel.current;(node?.querySelector<HTMLButtonElement>('.bb-downshift-switch:not(:disabled)')??node)?.focus();},[]);
  if(!view)return <div ref={panel} tabIndex={-1} className="bb-downshift bb-downshift-panel"><p role="status">Loading Downshift…</p></div>;
  const {state,palette,busy,warning}=view;
+ const unavailable=controllerUnavailable(view);
+ const inspectUnavailable=()=>{(panel.current?.querySelector<HTMLElement>('[data-downshift-clear]')??panel.current?.querySelector<HTMLElement>('[role=status]'))?.focus();};
  // A stable name; aria-checked carries on or off, and the model and phase come from the described-by text.
  return <div ref={panel} tabIndex={-1} className="bb-downshift bb-downshift-panel" data-phase={state?.phase??'unknown'} data-warm={palette.warm||undefined} data-confirmed={palette.confirmed} data-warning={warning||undefined}>
-  <div className="bb-downshift-panel-row"><strong>Downshift</strong><DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||!state?.available} busy={busy} label="Downshift" describedBy={state?.profile?`${ids.profile} ${ids.status}`:ids.status} onChange={view.toggle}/></div>
+  <div className="bb-downshift-panel-row"><strong>Downshift</strong><DownshiftSwitch className="bb-downshift-switch" checked={switchChecked(view)} disabled={busy||(!state?.available&&!unavailable)} busy={busy} label={unavailable?'Downshift unavailable. View status':'Downshift'} describedBy={state?.profile?`${ids.profile} ${ids.status}`:ids.status} onChange={view.toggle} onUnavailable={unavailable?inspectUnavailable:undefined}/></div>
   <DownshiftDetails view={view} ids={ids}/>
  </div>;
 }

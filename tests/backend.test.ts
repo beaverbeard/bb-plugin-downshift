@@ -91,4 +91,4 @@ test('manual OFF still restores profiles when the suppression record cannot be s
   if(autoEnabled)assert.equal(automatic?.status,'error');else assert.equal(automatic,undefined);
  }
 });
-test('package uses public SDK imports only',async()=>{const result=await experimental_scanPublicSdkOnly(process.cwd(),{allow:[/^react$/, /^react-dom$/]});assert.deepEqual(result.violations,[]);assert.deepEqual(result.privateDependencies,[]);});
+test('package uses public SDK imports only',async()=>{const result=await experimental_scanPublicSdkOnly(process.cwd(),{allow:[/^react$/, /^react-dom(?:\/server)?$/]});assert.deepEqual(result.violations,[]);assert.deepEqual(result.privateDependencies,[]);});

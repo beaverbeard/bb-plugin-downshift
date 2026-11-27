@@ -2,30 +2,34 @@
 
 Switch BB threads between model profiles you choose. Downshift supports models
 and providers available in BB with a confirmed native catalog. Choose your
-provider, main model and a smaller Downshift profile from that same provider.
+provider, main model and a Downshift profile from that provider.
 
 ## Companion native build required
 
 Downshift is experimental and requires the included companion BB source
-integration. It has not shipped upstream. Stock BB shows a disabled control;
-the UI alone cannot provide a global execution overlay. The package contains
+integration. It has not shipped upstream. Stock BB can show status but cannot
+switch models; the UI alone cannot provide a global overlay. The package contains
 an exact source patch, checksum, build guide and compatibility check.
 
 ## Your models
 
 Setup asks **“What is your main model?”** using the live BB catalog. Choose your
-provider and a smaller Downshift model from that same provider. There is no
-preselected main model. Available providers with confirmed catalogs can be used;
+provider and a Downshift model from that provider. No main model is preselected.
+Providers with confirmed catalogs can be used;
 unknown reasoning discovery is unavailable. Catalog discovery uses the primary
 machine. Each execution host separately validates the selected profile.
 
-The rabbit/turtle switch supports click, tap, swipe and keyboard controls.
+The rabbit/turtle switch supports tap, swipe and keyboard controls.
 OFF follows BB’s theme; ON is orange. The header switch can be hidden in settings;
 the sidebar control and shared tint remain. Setup can be saved on stock BB,
 without enabling execution. Active work finishes naturally. Later
 native turns use Downshift; turning it off restores each thread’s original model,
 reasoning and inherited settings. Other providers keep their settings. Native
 restore readers survive plugin removal.
+
+When switching is unavailable, either control opens its status. **Clear saved
+appearance** removes only this browser's unconfirmed orange tint, without a model
+command or OFF receipt. Confirmed ON and restoration cannot be dismissed this way.
 
 ## Optional automatic activation
 
@@ -40,22 +44,21 @@ undated windows keep their readings and use conservative group suppression:
 all original members must recover. Unknown/error or missing windows cannot rearm.
 The barrier survives reload; auto never turns Downshift OFF.
 
-Issuer account keys give account scope. When that optional key is absent, auto
-uses explicit provider/machine connection scope, another fresh reading before
+Issuer account keys give account scope. Without one, auto
+uses provider/machine connection scope, another fresh reading before
 CAS, and a new decision UUID instead of replaying old uncertain requests.
 Unreported account changes cannot be proven in connection scope; suppression
 is conservative. No guessed account identity, budget or context-token percentage
 is substituted for quota. A provider with no native usage source needs one before
 auto can work. Shared subscription limits still apply.
 
-All plugin text is English. No quota percentage widget is included. The plugin
-uses BB’s native integration, without a separate paid API service. It never
+English UI. No quota widget. Downshift
+uses BB’s native integration, without a separate paid API. It never
 patches an installed runtime or restarts a service.
 
-Moving from the former Economy plugin requires an explicit OFF, completed
-restoration, uninstall and new Downshift install. Native journals are retained;
-settings and active state are not imported automatically. Follow the migration
-guide in the repository before changing plugin identity.
+Moving from Economy requires OFF, completed restoration, uninstall and a new
+Downshift install. Journals are retained; settings and active state are not
+imported. Follow the repository migration guide before changing plugin identity.
 
 ## Manual OFF and storage recovery
 
